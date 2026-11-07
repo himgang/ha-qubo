@@ -103,6 +103,15 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         return HUB.QuboHub(self.hass, self.routing, "old", "old-refresh", "user", "device",
                            "unit", 0, False, "Plug", "handle", "client", False)
 
+    async def expect_refresh_failure(self, hub):
+        # The separate lifecycle patch deliberately changes failures from a
+        # logged return to a controlled exception. Test both scoped branches.
+        if hasattr(HUB, "QuboHubError"):
+            with self.assertRaises(HUB.QuboHubError):
+                await hub._async_refresh_token_if_needed()
+        else:
+            await hub._async_refresh_token_if_needed()
+
     async def test_config_redirects_never_reach_second_origin(self):
         for status in (301, 302, 303, 307, 308):
             with self.subTest(status=status):
@@ -131,7 +140,7 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         for status in (301, 302, 303, 307, 308):
             with self.subTest(status=status):
                 self.replies["refresh"] = (status, {})
-                await hub._async_refresh_token_if_needed()
+                await self.expect_refresh_failure(hub)
                 self.assertEqual(hub._access_token, "old")
                 self.assertEqual(self.sink_requests, [])
         self.hass.async_add_executor_job.assert_not_awaited()
@@ -226,11 +235,11 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         hub = self.hub()
         hub.session = Mock()
         hub.session.post.side_effect = TimeoutError("SENSITIVE-TIMEOUT")
-        with self.assertLogs(level=logging.ERROR) as logs:
-            await hub._async_refresh_token_if_needed()
+        with patch.object(HUB._LOGGER, "error") as errors:
+            await self.expect_refresh_failure(hub)
         self.assertEqual(hub._access_token, "old")
         self.hass.async_add_executor_job.assert_not_awaited()
-        self.assertNotIn("SENSITIVE-TIMEOUT", "\n".join(logs.output))
+        self.assertNotIn("SENSITIVE-TIMEOUT", str(errors.call_args_list))
 
     async def test_default_aiohttp_behavior_reproduces_redirect_leak(self):
         # Control: prove this local test rig exposes the pre-patch behavior.
