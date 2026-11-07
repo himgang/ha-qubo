@@ -64,6 +64,14 @@ Important residual risks:
   The pinned HACS wrapper selects **mutable** `ghcr.io/hacs/action:main`.
   Pinning these wrappers does not pin or audit the images, their source, or
   dependencies. Image digest pinning and image provenance remain future work.
+- A follow-up comparison resolved newer official releases checkout `v7.0.1`
+  (`3d3c42e5aac5ba805825da76410c181273ba90b1`) and setup-python `v7.1.0`
+  (`6d4fd22b20465ccc0f7354476588e8df7c9ca0e0`). Exact-version OSV queries
+  against their production lockfiles still returned advisory matches (undici
+  6.27.0 for checkout; minimatch 10.2.5 and undici 6.29.0 for setup-python).
+  A major-version update alone did not establish a clean dependency closure;
+  this bounded patch retains the reviewed versions above and explicitly leaves
+  action-runtime reachability/remediation as an unresolved upstream risk.
 - HACS keeps `permissions: {}`; `comment: "false"` disables its advertised
   optional PR-comment write behavior. The selected descriptor accepts a
   GitHub token and repository input, and this workflow validates the public
