@@ -50,6 +50,10 @@ class FakeResponse:
     def __init__(self, session):
         self.session = session
 
+    @property
+    def status(self):
+        return self.session.status
+
     async def __aenter__(self):
         self.session.entered.set()
         if self.session.gate is not None:
@@ -77,6 +81,7 @@ class FakeSession:
         self.entered = asyncio.Event()
         self.gate: asyncio.Event | None = None
         self.status_error: Exception | None = None
+        self.status = 200
         self.json_error: Exception | None = None
 
     def post(self, url, **kwargs):
@@ -213,7 +218,7 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_expiry_preserves_all_credentials(self):
         for value in (True, False, None, "3600", float("nan"), float("inf"),
-                      -float("inf"), -1, 0, 1, 59, 60, 31536001, 10**1000, [], {}):
+                      -float("inf"), -1, 0, 1, 59, 60, 604801, 10**1000, [], {}):
             with self.subTest(value=value):
                 await self.assert_invalid({
                     "accessToken": "new", "refreshToken": "rotated", "expires_in": value
@@ -225,7 +230,7 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.credentials(), ("new-access", "old-refresh", 4540))
 
     async def test_rotated_refresh_token_and_valid_expiry_bounds(self):
-        for lifetime in (60.5, 61, 3600.5, 31536000):
+        for lifetime in (60.5, 61, 3600.5, 604800):
             with self.subTest(lifetime=lifetime):
                 self.hub._expires_at = 0
                 self.session.data = {
@@ -259,6 +264,29 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
             await self.hub.turn_on()
         self.assertEqual(self.credentials(), ("old-access", "old-refresh", 0))
         self.assertEqual(self.client.published, [])
+
+    async def test_redirects_and_unexpected_statuses_fail_closed(self):
+        for status in (201, 204, 301, 302, 303, 307, 308, 401, 403, 500):
+            with self.subTest(status=status):
+                self.session.status = status
+                with self.assertRaises(hub_module.QuboHubError):
+                    await self.hub.turn_on()
+                self.assertEqual(self.credentials(), ("old-access", "old-refresh", 0))
+                self.assertEqual(self.client.published, [])
+        for _, kwargs in self.session.calls:
+            self.assertIs(kwargs["allow_redirects"], False)
+            self.assertEqual(kwargs["timeout"].total, 30)
+
+    async def test_refresh_error_traceback_does_not_disclose_transport_message(self):
+        import traceback
+        self.session.json_error = aiohttp.ClientError("SENSITIVE-TRANSPORT-MARKER")
+        try:
+            await self.hub.turn_on()
+        except hub_module.QuboHubError:
+            rendered = traceback.format_exc()
+        else:
+            self.fail("Expected fail-closed refresh")
+        self.assertNotIn("SENSITIVE-TRANSPORT-MARKER", rendered)
 
     async def test_restart_failure_blocks_until_successful_retry(self):
         self.session.data["refreshToken"] = "rotated"

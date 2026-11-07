@@ -260,8 +260,11 @@ class QuboHub:
                         "Token-Type": "USER",
                     }
                     async with self.session.post(
-                        refresh_url, json=payload, headers=headers
+                        refresh_url, json=payload, headers=headers,
+                        allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
                     ) as response:
+                        if response.status != 200:
+                            raise aiohttp.ClientError("Unexpected refresh HTTP status")
                         response.raise_for_status()
                         data = await response.json()
 
@@ -274,13 +277,13 @@ class QuboHub:
                     if not isinstance(refresh_token, str) or not refresh_token.strip():
                         raise ValueError("Invalid refresh token")
                     expires_in = data.get("expires_in", 3600)
-                    # Allow at most one year, and require a lifetime longer than
+                    # Allow at most seven days, and require a lifetime longer than
                     # the 60-second safety margin. Missing lifetime keeps the
                     # historical one-hour default; malformed values fail closed.
                     if (
                         isinstance(expires_in, bool)
                         or not isinstance(expires_in, (int, float))
-                        or not 60 < expires_in <= 31536000
+                        or not 60 < expires_in <= 604800
                         or not math.isfinite(expires_in)
                     ):
                         raise ValueError("Invalid token lifetime")
@@ -305,10 +308,10 @@ class QuboHub:
             except (
                 aiohttp.ClientError, TimeoutError, ValueError, TypeError,
                 OSError, RuntimeError,
-            ) as err:
+            ):
                 # Do not leak response bodies/tokens or allow commands to proceed
                 # after an HTTP, validation, or MQTT restart failure.
-                raise QuboHubError("Unable to refresh Qubo connection") from err
+                raise QuboHubError("Unable to refresh Qubo connection") from None
 
     async def turn_on(self):
         """Turn on the device."""
