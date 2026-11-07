@@ -1,0 +1,176 @@
+{
+  "review_date_utc": "2026-11-07",
+  "action_refs": {
+    "checkout": {
+      "sha": "11d5960a326750d5838078e36cf38b85af677262",
+      "commit_url": "https://github.com/actions/checkout/commit/11d5960a326750d5838078e36cf38b85af677262"
+    },
+    "setup-python": {
+      "sha": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+      "commit_url": "https://github.com/actions/setup-python/commit/ece7cb06caefa5fff74198d8649806c4678c61a1"
+    },
+    "hassfest": {
+      "sha": "86d4564712fa02543c808e3a693dd04f9d3f8361",
+      "commit_url": "https://github.com/home-assistant/actions/commit/86d4564712fa02543c808e3a693dd04f9d3f8361"
+    },
+    "hacs": {
+      "sha": "1ebf01c408f29afcb6406bd431bc98fd8cbb15aa",
+      "commit_url": "https://github.com/hacs/action/commit/1ebf01c408f29afcb6406bd431bc98fd8cbb15aa"
+    }
+  },
+  "npm_production_lock_entries_queried": 88,
+  "npm_osv_matches_not_reachability_findings": [
+    {
+      "action": "checkout",
+      "package": "uuid",
+      "version": "8.3.2",
+      "advisories": [
+        "GHSA-w5hq-g745-h8pq"
+      ]
+    },
+    {
+      "action": "checkout",
+      "package": "uuid",
+      "version": "3.4.0",
+      "advisories": [
+        "GHSA-w5hq-g745-h8pq"
+      ]
+    },
+    {
+      "action": "checkout",
+      "package": "@fastify/busboy",
+      "version": "2.1.1",
+      "advisories": [
+        "GHSA-gxm5-99cw-xjw9",
+        "GHSA-x8mw-p69m-v3mx"
+      ]
+    },
+    {
+      "action": "checkout",
+      "package": "undici",
+      "version": "5.29.0",
+      "advisories": [
+        "GHSA-2m5v-pch6-74hx",
+        "GHSA-2mjp-6q6p-2qxm",
+        "GHSA-35p6-xmwp-9g52",
+        "GHSA-4992-7rv2-5pvq",
+        "GHSA-8xcm-r25x-g524",
+        "GHSA-9fm3-97px-rjf6",
+        "GHSA-g8m3-5g58-fq7m",
+        "GHSA-g9mf-h72j-4rw9",
+        "GHSA-m8rv-5g2x-5cg5",
+        "GHSA-p88m-4jfj-68fv",
+        "GHSA-qrxm-fqhp-jwvm",
+        "GHSA-r53p-7pc4-xj5r",
+        "GHSA-v3r7-h72x-cjcm",
+        "GHSA-v9p9-hfj2-hcw8",
+        "GHSA-vrm6-8vpv-qv8q",
+        "GHSA-vxpw-j846-p89q"
+      ]
+    },
+    {
+      "action": "checkout",
+      "package": "uuid",
+      "version": "9.0.1",
+      "advisories": [
+        "GHSA-w5hq-g745-h8pq"
+      ]
+    },
+    {
+      "action": "setup-python",
+      "package": "brace-expansion",
+      "version": "1.1.13",
+      "advisories": [
+        "GHSA-3jxr-9vmj-r5cp",
+        "GHSA-6j4f-fj2g-mc7p",
+        "GHSA-mh99-v99m-4gvg",
+        "GHSA-q2hr-2g5m-vwhr",
+        "GHSA-qhr7-859c-m2p7",
+        "GHSA-rgw5-rvv9-x895"
+      ]
+    },
+    {
+      "action": "setup-python",
+      "package": "undici",
+      "version": "6.27.0",
+      "advisories": [
+        "GHSA-2m5v-pch6-74hx",
+        "GHSA-3wwx-pv8p-q78v",
+        "GHSA-4qv8-2p9j-2685",
+        "GHSA-8xcm-r25x-g524",
+        "GHSA-9fm3-97px-rjf6",
+        "GHSA-m8rv-5g2x-5cg5",
+        "GHSA-qrxm-fqhp-jwvm",
+        "GHSA-r53p-7pc4-xj5r",
+        "GHSA-rfgv-xxqx-mfg5",
+        "GHSA-v3r7-h72x-cjcm",
+        "GHSA-xjj6-f33q-929c"
+      ]
+    }
+  ],
+  "pypi_osv_queries": {
+    "aiohttp": {},
+    "paho-mqtt": {},
+    "voluptuous": {}
+  },
+  "resolved_python_pip_audit": {
+    "dependencies": [
+      {
+        "name": "aiohappyeyeballs",
+        "version": "2.7.1",
+        "vulns": []
+      },
+      {
+        "name": "aiohttp",
+        "version": "3.14.5",
+        "vulns": []
+      },
+      {
+        "name": "aiosignal",
+        "version": "1.4.0",
+        "vulns": []
+      },
+      {
+        "name": "attrs",
+        "version": "26.1.0",
+        "vulns": []
+      },
+      {
+        "name": "frozenlist",
+        "version": "1.8.0",
+        "vulns": []
+      },
+      {
+        "name": "idna",
+        "version": "3.20",
+        "vulns": []
+      },
+      {
+        "name": "multidict",
+        "version": "7.2.1",
+        "vulns": []
+      },
+      {
+        "name": "paho-mqtt",
+        "version": "2.1.0",
+        "vulns": []
+      },
+      {
+        "name": "propcache",
+        "version": "0.5.4",
+        "vulns": []
+      },
+      {
+        "name": "voluptuous",
+        "version": "0.16.0",
+        "vulns": []
+      },
+      {
+        "name": "yarl",
+        "version": "1.25.1",
+        "vulns": []
+      }
+    ],
+    "fixes": []
+  }
+}
