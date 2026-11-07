@@ -1,8 +1,10 @@
 """Qubo hub integration helper for Home Assistant."""
 
+import asyncio
 from datetime import timedelta
 import json
 import logging
+import math
 import ssl
 import time
 
@@ -15,6 +17,10 @@ from homeassistant.helpers.event import async_track_time_interval
 from .const import BASE_URL, LOGIN_DEVICE_NAME
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class QuboHubError(RuntimeError):
+    """A refresh or lifecycle failure that prevents command publication."""
 
 
 class QuboHub:
@@ -42,6 +48,10 @@ class QuboHub:
         self._access_token = access_token
         self._refresh_token = refresh_token
         self._expires_at = expires_at
+        self._lifecycle_lock = asyncio.Lock()
+        self._stopped = False
+        self._mqtt_needs_restart = False
+        self._mqtt_tls_configured = False
 
         self._user_uuid = user_uuid
         self.device_uuid = device_uuid
@@ -174,109 +184,131 @@ class QuboHub:
         except Exception as err:
             _LOGGER.error("Unexpected error in _on_message: %s", err)
 
+    async def _async_mqtt_job(self, job):
+        """Keep the lifecycle lock held until a cancelled executor job finishes."""
+        task = asyncio.ensure_future(self.hass.async_add_executor_job(job))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Repeated cancellation must not release the lock while the worker
+            # can still reconnect a client that stop() is about to tear down.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            task.result()
+            raise
+
     async def start(self):
-        """Start the MQTT connection and begin periodic metric refreshes."""
+        """Start MQTT without racing a refresh or an unload."""
+        async with self._lifecycle_lock:
+            def connect_mqtt():
+                if not self._mqtt_tls_configured:
+                    context = ssl.create_default_context()
+                    self._mqtt_client.tls_set_context(context)
+                    self._mqtt_tls_configured = True
+                self._mqtt_client.connect("mqtt.platform.quboworld.com", 8883, 60)
+                self._mqtt_client.loop_start()
 
-        def connect_mqtt():
+            await self._async_mqtt_job(connect_mqtt)
+            self._stopped = False
+            if self._unsub_refresh is None:
+                self._unsub_refresh = async_track_time_interval(
+                    self.hass, self._send_meter_refresh, timedelta(seconds=60)
+                )
 
-            # Create a secure, default context that enforces certificate and hostname verification
-            context = ssl.create_default_context()
-            self._mqtt_client.tls_set_context(context)
-
-            self._mqtt_client.connect("mqtt.platform.quboworld.com", 8883, 60)
-            self._mqtt_client.loop_start()
-
-        await self.hass.async_add_executor_job(connect_mqtt)
-
-        # Request metrics immediately, then every 60 seconds
         await self._send_meter_refresh()
-        self._unsub_refresh = async_track_time_interval(
-            self.hass, self._send_meter_refresh, timedelta(seconds=60)
-        )
 
     async def stop(self):
-        """Stop the MQTT connection and cancel periodic metric refreshes."""
-        if self._unsub_refresh:
-            self._unsub_refresh()
-        self._mqtt_client.loop_stop()
-        self._mqtt_client.disconnect()
+        """Serialize teardown with refresh; never join Paho's thread on HA's loop."""
+        async with self._lifecycle_lock:
+            self._stopped = True
+            if self._unsub_refresh:
+                self._unsub_refresh()
+                self._unsub_refresh = None
+
+            def stop_mqtt():
+                self._mqtt_client.disconnect()
+                self._mqtt_client.loop_stop()
+
+            await self._async_mqtt_job(stop_mqtt)
 
     async def _async_refresh_token_if_needed(self):
-        if time.time() < self._expires_at:
-            return
+        # The expiry check must be inside the same lock as refresh and teardown:
+        # concurrent commands must not rotate the same refresh token twice.
+        async with self._lifecycle_lock:
+            if self._stopped:
+                raise QuboHubError("Qubo hub is stopped")
+            if time.time() < self._expires_at and not self._mqtt_needs_restart:
+                return
 
-        # (INSERT YOUR EXACT HTTP REFRESH CALL HERE)
-        # self._access_token = new_token
-        # self._expires_at = new_expiration
-        # self._mqtt_client.username_pw_set(username=self._user_uuid, password=self._access_token)
-        # self._mqtt_client.disconnect() # Forces auto-reconnect with new token
+            try:
+                if time.time() >= self._expires_at:
+                    _LOGGER.info("Qubo access token expired. Refreshing")
+                    refresh_url = f"{BASE_URL}sms/api/v1/sp/d10e4bfb0153496e8e8bb955f7ebe413/users/{self._user_uuid}/auth/refresh"
+                    payload = {
+                        "accessToken": self._access_token,
+                        "refreshToken": self._refresh_token,
+                    }
+                    headers = {
+                        "Host": "srvcapp.platform.quboworld.com",
+                        "User-Agent": "libcurl-agent restclient-cpp/2:1:1",
+                        "Accept": "*/*",
+                        "Login-Device-Name": LOGIN_DEVICE_NAME,
+                        "Source-Device-Id": self._client_id,
+                        "Token-Type": "USER",
+                    }
+                    async with self.session.post(
+                        refresh_url, json=payload, headers=headers
+                    ) as response:
+                        response.raise_for_status()
+                        data = await response.json()
 
-        _LOGGER.info("Qubo access token expired. Refreshing")
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid token response")
+                    access_token = data.get("accessToken")
+                    refresh_token = data.get("refreshToken", self._refresh_token)
+                    if not isinstance(access_token, str) or not access_token.strip():
+                        raise ValueError("Invalid access token")
+                    if not isinstance(refresh_token, str) or not refresh_token.strip():
+                        raise ValueError("Invalid refresh token")
+                    expires_in = data.get("expires_in", 3600)
+                    # Allow at most one year, and require a lifetime longer than
+                    # the 60-second safety margin. Missing lifetime keeps the
+                    # historical one-hour default; malformed values fail closed.
+                    if (
+                        isinstance(expires_in, bool)
+                        or not isinstance(expires_in, (int, float))
+                        or not 60 < expires_in <= 31536000
+                        or not math.isfinite(expires_in)
+                    ):
+                        raise ValueError("Invalid token lifetime")
 
-        # --- YOUR REFRESH API CALL GOES HERE ---
-        refresh_url = f"{BASE_URL}sms/api/v1/sp/d10e4bfb0153496e8e8bb955f7ebe413/users/{self._user_uuid}/auth/refresh"  # Replace with actual Qubo URL
-        payload = {
-            "accessToken": self._access_token,
-            "refreshToken": self._refresh_token,
-        }
+                    # Commit only after the entire response is validated.
+                    self._access_token = access_token
+                    self._refresh_token = refresh_token
+                    self._expires_at = time.time() + expires_in - 60
+                    self._mqtt_needs_restart = True
 
-        # set the headers as following
-        headers = {
-            "Host": "srvcapp.platform.quboworld.com",
-            "User-Agent": "libcurl-agent restclient-cpp/2:1:1",
-            "Accept": "*/*",
-            "Login-Device-Name": LOGIN_DEVICE_NAME,
-            "Source-Device-Id": self._client_id,  # Use the client_id we saved from the config flow
-            "Token-Type": "USER",
-        }
-
-        try:
-            async with self.session.post(
-                refresh_url, json=payload, headers=headers
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
-
-                # Update our variables with the new data
-                self._access_token = data.get("accessToken")
-                # # Some APIs give you a new refresh token too, some don't.
-                # if "refresh_token" in data:
-                #     self._refresh_token = data.get("refresh_token")
-
-                expires_in = data.get("expires_in", 3600)
-                self._expires_at = time.time() + expires_in - 60
-
-                _LOGGER.debug("Token refreshed successfully")
-                # Force MQTT to reconnect with the new password (token)
-
-
-                # self._mqtt_client.username_pw_set(
-                #     username=self._user_uuid, password=self._access_token
-                # )
-
-                # # Disconnecting forces the background loop_start() thread to automatically
-                # # reconnect using the newly set credentials.
-                # self._mqtt_client.disconnect()
-
-                # Replace with this proper reboot sequence:
                 def restart_mqtt():
-                    """Safely reboot the MQTT client in a background thread."""
-                    _LOGGER.debug("Rebooting MQTT client with new token")
-                    self._mqtt_client.loop_stop()     # Kill the dead thread
-                    self._mqtt_client.disconnect()    # Ensure socket is closed
-
-                    # Apply new credentials and reconnect
-                    self._mqtt_client.username_pw_set(username=self._user_uuid, password=self._access_token)
+                    self._mqtt_client.disconnect()
+                    self._mqtt_client.loop_stop()
+                    self._mqtt_client.username_pw_set(
+                        username=self._user_uuid, password=self._access_token
+                    )
                     self._mqtt_client.connect("mqtt.platform.quboworld.com", 8883, 60)
-                    self._mqtt_client.loop_start()    # Start the fresh thread
-                    _LOGGER.info("MQTT connection successfully restored")
+                    self._mqtt_client.loop_start()
 
-                # Send this blocking sequence to the safe executor pool
-                await self.hass.async_add_executor_job(restart_mqtt)
-
-
-        except aiohttp.ClientError as err:
-            _LOGGER.error("Failed to refresh Qubo token: %s", err)
+                await self._async_mqtt_job(restart_mqtt)
+                self._mqtt_needs_restart = False
+            except (
+                aiohttp.ClientError, TimeoutError, ValueError, TypeError,
+                OSError, RuntimeError,
+            ) as err:
+                # Do not leak response bodies/tokens or allow commands to proceed
+                # after an HTTP, validation, or MQTT restart failure.
+                raise QuboHubError("Unable to refresh Qubo connection") from err
 
     async def turn_on(self):
         """Turn on the device."""
