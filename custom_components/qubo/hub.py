@@ -232,8 +232,11 @@ class QuboHub:
 
         try:
             async with self.session.post(
-                refresh_url, json=payload, headers=headers
+                refresh_url, json=payload, headers=headers,
+                allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
+                if response.status != 200:
+                    raise aiohttp.ClientError("Unexpected refresh HTTP status")
                 response.raise_for_status()
                 data = await response.json()
 
@@ -275,8 +278,8 @@ class QuboHub:
                 await self.hass.async_add_executor_job(restart_mqtt)
 
 
-        except aiohttp.ClientError as err:
-            _LOGGER.error("Failed to refresh Qubo token: %s", err)
+        except aiohttp.ClientError:
+            _LOGGER.error("Qubo token refresh failed: connection or HTTP failure")
 
     async def turn_on(self):
         """Turn on the device."""
