@@ -154,7 +154,8 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         fake_hub.start.assert_awaited_once()
 
     async def test_sync_rejects_wildcard_or_missing_topic_identifiers(self):
-        for value in (None, "", "+", "#", "other/device", [], 123):
+        for value in (None, "", "+", "#", "other/device", [], 123, ".", "..",
+                      "%2e%2e", "user\tname", "user\nname", "user%2Fother"):
             for key in ("deviceUUID", "unitUUID"):
                 with self.subTest(value=value, key=key):
                     device = {"deviceName": "Smart Plug 10A", "deviceUUID": "device",
@@ -167,7 +168,9 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_response_schema_is_rejected(self):
         for body in ({}, [], None, {"error": "invalid credentials"},
                      {**AUTH, "accessToken": None}, {**AUTH, "refreshToken": ""},
-                     {**AUTH, "uuid": "../other"}, {**AUTH, "expires_in": True},
+                     *({**AUTH, "uuid": value} for value in
+                       ("../other", ".", "..", "%2e%2e", "user\tname", "user%2Fother")),
+                     {**AUTH, "expires_in": True},
                      {**AUTH, "expires_in": 0}, {**AUTH, "expires_in": float("inf")},
                      {**AUTH, "expires_in": 10**1000}, "not-json"):
             with self.subTest(body_type=type(body).__name__):
@@ -218,6 +221,16 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         for _, kwargs in self.routing.calls:
             self.assertIs(kwargs["allow_redirects"], False)
             self.assertEqual(kwargs["timeout"].total, 30)
+
+    async def test_refresh_timeout_does_not_log_exception_or_replace_token(self):
+        hub = self.hub()
+        hub.session = Mock()
+        hub.session.post.side_effect = TimeoutError("SENSITIVE-TIMEOUT")
+        with self.assertLogs(level=logging.ERROR) as logs:
+            await hub._async_refresh_token_if_needed()
+        self.assertEqual(hub._access_token, "old")
+        self.hass.async_add_executor_job.assert_not_awaited()
+        self.assertNotIn("SENSITIVE-TIMEOUT", "\n".join(logs.output))
 
     async def test_default_aiohttp_behavior_reproduces_redirect_leak(self):
         # Control: prove this local test rig exposes the pre-patch behavior.

@@ -278,7 +278,7 @@ class QuboHub:
                 await self.hass.async_add_executor_job(restart_mqtt)
 
 
-        except aiohttp.ClientError:
+        except (aiohttp.ClientError, TimeoutError):
             _LOGGER.error("Qubo token refresh failed: connection or HTTP failure")
 
     async def turn_on(self):

@@ -23,7 +23,9 @@ Disable redirects on login, sync and refresh; reject unexpected HTTP statuses;
 set a 30-second request timeout. Never log arbitrary authentication response
 bodies or uncontrolled exception text. Require nonempty access/refresh tokens
 and account ID before accepting login. Reject URL separators and MQTT wildcards
-in account/device topic segments. Validate numeric token lifetime (greater than
+in account/device topic segments. Identifiers must be 1–128 ASCII letters,
+digits, underscores or hyphens, preventing URL dot-segment/percent-encoding and
+control-character normalization as well. Validate numeric token lifetime (greater than
 60 seconds and at most 7 days; default 3600 when omitted).
 
 The reverse-engineered API does not provide a stable published schema. These

@@ -1,14 +1,14 @@
 """Validation shared by Qubo authentication callers."""
 
 import math
+import re
 
 
 def validate_identifier(value):
     """Require one literal identifier, not a URL path or MQTT wildcard."""
     if (
         not isinstance(value, str)
-        or not value.strip()
-        or any(char in value for char in "/?#+\r\n\x00")
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value)
     ):
         raise ValueError("Invalid account or device identifier")
     return value
