@@ -59,10 +59,9 @@ SENSOR_TYPES = [
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Set up the sensor platform."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
+    hubs = hass.data[DOMAIN][entry.entry_id]
 
-    # Generate all 5 sensors dynamically
-    entities = [QuboSensor(hub, description) for description in SENSOR_TYPES]
+    entities = [QuboSensor(hub, description) for hub in hubs for description in SENSOR_TYPES]
     async_add_entities(entities)
 
 

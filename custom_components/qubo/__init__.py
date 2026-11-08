@@ -1,5 +1,6 @@
 """The Qubo integration."""
 
+import asyncio
 import logging
 import math
 import time
@@ -20,7 +21,7 @@ from .const import (
     DOMAIN,
     LOGIN_DEVICE_NAME,
 )
-from .hub import QuboHub
+from .hub import QuboHub, QuboSession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,56 +135,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not isinstance(sync_data, dict):
                 raise ValueError("Invalid sync response")
 
-            # 1. Extract Device & Unit UUIDs
-            # Assuming you only have one device, or we just grab the first one
             devices = sync_data.get("devices", [])
             if not isinstance(devices, list):
                 raise ValueError("Invalid device list")
-            if not devices:
-                _LOGGER.error("No devices found in Qubo account!")
-                return False
 
-            # Search for the specific device by name
-            qubo_device = None
-            target_name = "Smart Plug 10A"
-
+            plugs = {}
+            shadows = {
+                shadow.get("deviceUUID"): shadow
+                for shadow in sync_data.get("deviceshadow", [])
+                if isinstance(shadow, dict) and isinstance(shadow.get("deviceUUID"), str)
+            }
             for device in devices:
-                if device.get("deviceName") == target_name:
-                    qubo_device = device
-                    break
+                if not isinstance(device, dict):
+                    continue
+                name = device.get("deviceName") or device.get("name")
+                model = device.get("deviceModel") or device.get("model") or device.get("aModelNo")
+                kind = device.get("deviceType") or device.get("type")
+                if not (
+                    isinstance(model, str) and model.upper().startswith("HSP")
+                    or isinstance(kind, str) and "PLUG" in kind.upper()
+                    or name == "Smart Plug 10A"
+                ):
+                    continue
 
-            # Stop setup if the device wasn't found in the API response
-            if not qubo_device:
-                _LOGGER.error(
-                    "Could not find a device named '%s' in your Qubo account!",
-                    target_name,
+                device_uuid = validate_identifier(device.get("deviceUUID"))
+                unit_uuid = validate_identifier(device.get("unitUUID"))
+                if not isinstance(name, str) or not name.strip():
+                    name = f"Qubo Smart Plug (…{device_uuid[-4:]})"
+                shadow = shadows.get(device_uuid, {})
+                initial_availability = shadow.get("operationState", {}).get("value") == "online"
+                initial_state = False
+                for service in shadow.get("services", []):
+                    if service.get("service") == "lcSwitchControl":
+                        initial_state = service.get("attributes", {}).get("power", {}).get("value") == "on"
+                        break
+                plugs[device_uuid] = (
+                    unit_uuid, name.strip(), device.get("handleName"), initial_state, initial_availability,
                 )
+
+            if not plugs:
+                _LOGGER.error("No supported smart plugs found in the Qubo account")
                 return False
-
-            device_uuid = validate_identifier(qubo_device.get("deviceUUID"))
-            unit_uuid = validate_identifier(qubo_device.get("unitUUID"))
-            device_name = qubo_device.get("deviceName")
-            handle_name = qubo_device.get("handleName")
-
-            # 2. Extract Initial State from Device Shadow
-            initial_state = False
-            initial_availability = False
-            shadows = sync_data.get("deviceshadow", [])
-            for shadow in shadows:
-                if shadow.get("deviceUUID") == device_uuid:
-                    op_state_value = shadow.get("operationState", {}).get("value")
-                    initial_availability = (op_state_value == "online")
-
-                    services = shadow.get("services", [])
-                    for service in services:
-                        if service.get("service") == "lcSwitchControl":
-                            power_attr = service.get("attributes", {}).get(
-                                "power", {}
-                            )
-                            initial_state = power_attr.get("value") == "on"
-                            break
-
-            _LOGGER.info("Successfully fetched Qubo data for: %s", device_name)
 
     except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError):
         _LOGGER.error("Qubo setup failed: invalid response or connection failure")
@@ -192,28 +184,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if phone_auth and time.time() >= expires_at:
         raise ConfigEntryAuthFailed("Qubo phone session expired")
 
-    # Create the shared Hub and start it
-    hub = QuboHub(
-        hass,
-        session,
-        access_token,
-        refresh_token,
-        user_uuid,
-        device_uuid,
-        unit_uuid,
-        expires_at,
-        initial_state,
-        device_name,
-        handle_name,
-        client_id,  # Pass the client_id to the Hub
-        initial_availability,
-        **({"entry": entry, "phone_auth": True} if phone_auth else {})
-    )
-    await hub.start()
+    auth = QuboSession(access_token, refresh_token, expires_at)
+    hubs = []
+    try:
+        for device_uuid, (unit_uuid, name, handle, state, available) in plugs.items():
+            hub = QuboHub(
+                hass, session, access_token, refresh_token, user_uuid, device_uuid,
+                unit_uuid, expires_at, state, name, handle, client_id, available,
+                entry=entry, phone_auth=phone_auth, auth=auth,
+            )
+            hubs.append(hub)
+            await hub.start()
+    except BaseException:
+        await asyncio.gather(*(hub.stop() for hub in hubs), return_exceptions=True)
+        raise
 
-    # Save the Hub to hass.data so switch.py and sensor.py can access it
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {"hub": hub}
+    hass.data[DOMAIN][entry.entry_id] = hubs
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -221,11 +208,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    await hub.stop()  # Disconnect MQTT safely
-
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-
+        hubs = hass.data[DOMAIN].pop(entry.entry_id)
+        await asyncio.gather(*(hub.stop() for hub in hubs))
     return unload_ok

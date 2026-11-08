@@ -190,6 +190,25 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertTrue(all(t != threading.get_ident() for t in self.hass.executor_threads))
 
+    async def test_two_plugs_refresh_account_once_and_use_separate_topics(self):
+        auth = hub_module.QuboSession("old-access", "old-refresh", 0)
+        with patch.object(hub_module.mqtt, "Client", FakeClient):
+            hubs = [
+                hub_module.QuboHub(
+                    self.hass, self.session, "old-access", "old-refresh", "user",
+                    device, "unit", 0, False, device, "handle", "client", True, auth=auth,
+                )
+                for device in ("desk", "coffee")
+            ]
+
+        await asyncio.gather(*(hub.turn_on() for hub in hubs))
+
+        self.assertEqual(len(self.session.calls), 1)
+        for hub in hubs:
+            self.assertEqual(hub._access_token, self.session.data["accessToken"])
+            self.assertEqual(hub._mqtt_client.published[0][0],
+                             f"/control/unit/{hub.device_uuid}/lcSwitchControl")
+
     async def test_valid_token_does_not_refresh_or_restart(self):
         self.hub._expires_at = float("inf")
         await self.hub.turn_on()

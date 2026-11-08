@@ -23,6 +23,16 @@ class QuboHubError(RuntimeError):
     """A refresh or lifecycle failure that prevents command publication."""
 
 
+class QuboSession:
+    """Share account credentials and serialize refresh across plug connections."""
+
+    def __init__(self, access_token, refresh_token, expires_at):
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.expires_at = expires_at
+        self.lock = asyncio.Lock()
+
+
 class QuboHub:
     """Qubo hub integration helper for Home Assistant."""
 
@@ -41,7 +51,7 @@ class QuboHub:
         handle_name,
         client_id,  # Accept the client_id in the constructor
         initial_availability,
-        *, entry=None, phone_auth=False
+        *, entry=None, phone_auth=False, auth=None
     ) -> None:
         """Initialize the Qubo hub."""
         self.hass = hass
@@ -49,7 +59,8 @@ class QuboHub:
         self._access_token = access_token
         self._refresh_token = refresh_token
         self._expires_at = expires_at
-        self._lifecycle_lock = asyncio.Lock()
+        self._auth = auth
+        self._lifecycle_lock = auth.lock if auth is not None else asyncio.Lock()
         self._stopped = False
         self._entry = entry
         self._phone_auth = phone_auth
@@ -290,7 +301,10 @@ class QuboHub:
                     self.hass, self._periodic_meter_refresh if self._phone_auth else self._send_meter_refresh, timedelta(seconds=60)
                 )
 
-        await self._send_meter_refresh()
+        if self._phone_auth:
+            await self._periodic_meter_refresh()
+        else:
+            await self._send_meter_refresh()
 
     async def stop(self):
         """Serialize teardown with refresh; never join Paho's thread on HA's loop."""
@@ -352,6 +366,12 @@ class QuboHub:
             if self._phone_auth and (self._reauth_started or self._mqtt_auth_rejected or time.time() >= self._expires_at):
                 await self._expire_phone_session()
                 raise QuboHubError("Qubo phone session requires reauthentication")
+            if self._auth is not None:
+                if self._access_token != self._auth.access_token:
+                    self._mqtt_needs_restart = True
+                self._access_token = self._auth.access_token
+                self._refresh_token = self._auth.refresh_token
+                self._expires_at = self._auth.expires_at
             if time.time() < self._expires_at and not self._mqtt_needs_restart:
                 return
 
@@ -404,6 +424,10 @@ class QuboHub:
                     self._access_token = access_token
                     self._refresh_token = refresh_token
                     self._expires_at = time.time() + expires_in - 60
+                    if self._auth is not None:
+                        self._auth.access_token = access_token
+                        self._auth.refresh_token = refresh_token
+                        self._auth.expires_at = self._expires_at
                     self._mqtt_needs_restart = True
 
                 def restart_mqtt():

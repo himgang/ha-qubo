@@ -162,6 +162,38 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
                          (AUTH["accessToken"], AUTH["refreshToken"], AUTH["uuid"]))
         fake_hub.start.assert_awaited_once()
 
+    async def test_discovers_all_renamed_plugs_and_ignores_other_devices(self):
+        self.replies["sync"] = (200, {
+            "devices": [
+                {"deviceName": "Desk Lamp", "deviceModel": "HSP02A", "deviceUUID": "desk",
+                 "unitUUID": "unit-1", "handleName": "desk-handle"},
+                {"deviceName": "Coffee Machine", "deviceType": "smartPlug", "deviceUUID": "coffee",
+                 "unitUUID": "unit-2", "handleName": "coffee-handle"},
+                {"deviceName": "Plug Cam", "deviceType": "camera", "deviceUUID": "cam"},
+            ],
+            "deviceshadow": [
+                {"deviceUUID": "coffee", "operationState": {"value": "online"},
+                 "services": [{"service": "lcSwitchControl", "attributes": {"power": {"value": "on"}}}]},
+            ],
+        })
+        hubs = [types.SimpleNamespace(start=AsyncMock(), stop=AsyncMock()) for _ in range(2)]
+        self.hass.config_entries = types.SimpleNamespace(
+            async_forward_entry_setups=AsyncMock(), async_unload_platforms=AsyncMock(return_value=True),
+        )
+        with patch.object(PACKAGE, "QuboHub", side_effect=hubs) as ctor:
+            self.assertTrue(await PACKAGE.async_setup_entry(self.hass, self.entry))
+        desk, coffee = ctor.call_args_list
+        self.assertEqual(desk.args[5:7] + desk.args[8:11], ("desk", "unit-1", False, "Desk Lamp", "desk-handle"))
+        self.assertEqual(coffee.args[5:7] + coffee.args[8:11], ("coffee", "unit-2", True, "Coffee Machine", "coffee-handle"))
+        self.assertFalse(desk.args[12])
+        self.assertTrue(coffee.args[12])
+        self.assertIs(desk.kwargs["auth"], coffee.kwargs["auth"])
+        self.assertEqual(self.hass.data["qubo"][self.entry.entry_id], hubs)
+        self.assertTrue(await PACKAGE.async_unload_entry(self.hass, self.entry))
+        for hub in hubs:
+            hub.start.assert_awaited_once()
+            hub.stop.assert_awaited_once()
+
     async def test_sync_rejects_wildcard_or_missing_topic_identifiers(self):
         for value in (None, "", "+", "#", "other/device", [], 123, ".", "..",
                       "%2e%2e", "user\tname", "user\nname", "user%2Fother"):
