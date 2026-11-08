@@ -3,20 +3,54 @@
     "step": {
       "user": {
         "title": "Connect your Qubo account",
-        "description": "Enter your Qubo login credentials.",
+        "description": "Choose how to sign in.",
+        "data": {
+          "auth_mode": "Sign-in method"
+        },
+        "data_description": {
+          "auth_mode": "Select password or phone."
+        }
+      },
+      "password": {
+        "title": "Sign in with password",
         "data": {
           "username": "Email address",
           "password": "Password"
+        }
+      },
+      "phone": {
+        "title": "Request a code",
+        "description": "Enter your phone number and country calling code. A new code will be sent.",
+        "data": {
+          "phone": "Phone number",
+          "country_code": "Country calling code"
+        }
+      },
+      "otp": {
+        "title": "Verify your phone",
+        "description": "Enter the code sent to your phone.",
+        "data": {
+          "code": "One-time code"
+        }
+      },
+      "profile": {
+        "title": "Select an account",
+        "data": {
+          "profile": "Account"
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to Qubo. Check your internet or API.",
       "invalid_auth": "Invalid username or password.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "invalid_otp": "Invalid code. Request a new code and try again."
     },
     "abort": {
-      "already_configured": "This Qubo account is already configured."
+      "already_configured": "This Qubo account is already configured.",
+      "reauth_successful": "Your account has been reauthenticated.",
+      "wrong_account": "The selected account does not match this integration.",
+      "reauth_not_supported": "Reauthentication is not supported for this sign-in method."
     }
   }
 }
