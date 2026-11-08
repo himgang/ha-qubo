@@ -113,76 +113,112 @@ class QuboHub:
         else:
             _LOGGER.error("Failed to connect to Qubo MQTT broker, return code %s", rc)
 
+    @staticmethod
+    def _mqtt_object(data, *path):
+        """Read an optional object path, rejecting non-object containers."""
+        if not isinstance(data, dict):
+            raise ValueError("Expected an object")
+        for key in path:
+            data = data.get(key, {})
+            if not isinstance(data, dict):
+                raise ValueError("Expected an object")
+        return data
+
+    @staticmethod
+    def _mqtt_number(value):
+        """Accept numeric wire values, but not booleans or invalid readings."""
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError("Expected a number")
+        number = float(value)
+        if not math.isfinite(number) or number < 0:
+            raise ValueError("Expected a finite nonnegative number")
+        return number
+
+    @staticmethod
+    def _reject_json_constant(value):
+        """Reject nonstandard JSON constants without exposing input in logs."""
+        raise ValueError("Invalid JSON constant")
+
     def _on_message(self, client, userdata, msg):
+        # Filter before decoding: only these exact topics are subscribed.
         try:
-            payload = json.loads(msg.payload.decode("utf-8"))
             topic = msg.topic
-            _LOGGER.debug("Received MQTT message on topic %s: %s", topic, payload)
+        except UnicodeError:
+            return
+        if topic not in (
+            self._topic_monitor_switch,
+            self._topic_monitor_meter,
+            self._topic_monitor_heartbeat,
+        ):
+            return
+        if len(msg.payload) > 64 * 1024:
+            return
 
+        try:
+            payload = json.loads(
+                msg.payload.decode("utf-8"),
+                parse_constant=self._reject_json_constant,
+            )
+            devices = self._mqtt_object(payload, "devices")
+            if topic == self._topic_monitor_heartbeat:
+                if "operationState" not in devices:
+                    return
+                operation_state = devices["operationState"]
+                if operation_state not in ("online", "offline"):
+                    return
+                self.hass.loop.call_soon_threadsafe(
+                    self._apply_mqtt_update, None, {}, operation_state == "online"
+                )
+                return
+
+            service = (
+                "lcSwitchControl"
+                if topic == self._topic_monitor_switch
+                else "plugMetering"
+            )
+            data = self._mqtt_object(
+                devices, "services", service, "events", "stateChanged"
+            )
             if topic == self._topic_monitor_switch:
-                state_data = (
-                    payload.get("devices", {})
-                    .get("services", {})
-                    .get("lcSwitchControl", {})
-                    .get("events", {})
-                    .get("stateChanged", {})
-                )
-                if "power" in state_data:
-                    _LOGGER.debug("Updating switch state to: %s", state_data["power"])
-                    self.available = True  # If we got a message, it's online
-                    self.state = state_data["power"] == "on"
-                    self.hass.loop.call_soon_threadsafe(self._publish_update)
-                else:
-                    _LOGGER.debug("No 'power' attribute in switch state_data: %s", state_data)
+                if "power" not in data or data["power"] not in ("on", "off"):
+                    return
+                state = data["power"] == "on"
+                metrics = {}
+            else:
+                state = None
+                metrics = {}
+                for key in ("power", "current", "voltage", "consumption", "duration"):
+                    if key not in data:
+                        continue
+                    number = self._mqtt_number(data[key])
+                    # Keep the last good voltage for sensor glitches <= 50 V.
+                    if key == "voltage" and number <= 50:
+                        continue
+                    metrics[key] = int(number) if key == "duration" else number
+                if not any(
+                    key in data
+                    for key in ("power", "current", "voltage", "consumption", "duration")
+                ):
+                    return
+        except (UnicodeError, ValueError, TypeError, OverflowError, RecursionError):
+            # No per-message logging: hostile input must not leak payloads or
+            # create an unbounded log flood (even with debug logging enabled).
+            return
 
-            elif topic == self._topic_monitor_meter:
-                metrics_data = (
-                    payload.get("devices", {})
-                    .get("services", {})
-                    .get("plugMetering", {})
-                    .get("events", {})
-                    .get("stateChanged", {})
-                )
-                if metrics_data:
-                    _LOGGER.debug("Updating metrics with: %s", metrics_data)
-                    self.available = True  # If we got metrics, it's online
-                    self.metrics["power"] = float(metrics_data.get("power", 0))
-                    self.metrics["current"] = float(metrics_data.get("current", 0))
-                    # self.metrics["voltage"] = float(metrics_data.get("voltage", 0))
-                    self.metrics["consumption"] = float(
-                        metrics_data.get("consumption", 0)
-                    )
-                    self.metrics["duration"] = int(metrics_data.get("duration", 0))
+        # Validation completes before queuing one atomic HA-loop update.
+        self.hass.loop.call_soon_threadsafe(
+            self._apply_mqtt_update, state, metrics, True
+        )
 
-                    # Prevent zero-voltage drops from hitting the dashboard
-                    new_voltage = float(metrics_data.get("voltage", 0))
-
-                    # If the voltage is above 50V, it's a real reading.
-                    # If it's below 50V (like 0.11V or 0V), it's a sensor glitch,
-                    # so we ignore it and keep the last known good value.
-                    if new_voltage > 50:
-                        self.metrics["voltage"] = new_voltage
-
-                    self.hass.loop.call_soon_threadsafe(self._publish_update)
-                else:
-                    _LOGGER.debug("No stateChanged data found in plugMetering payload")
-
-            elif topic == self._topic_monitor_heartbeat:
-                operation_state = payload.get("devices", {}).get("operationState")
-                if operation_state:
-                    # Update status and notify HA if it changed
-                    is_available = (operation_state == "online")
-                    if self.available != is_available:
-                        self.available = is_available
-                        _LOGGER.debug(f"Qubo plug went {'online' if is_available else 'offline'}")
-                        self.hass.loop.call_soon_threadsafe(self._publish_update)
-                else:
-                    _LOGGER.debug("No operationState found in heartbeat payload")
-
-        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as err:
-            _LOGGER.error("Error processing MQTT message: %s. Payload: %s", err, msg.payload)
-        except Exception as err:
-            _LOGGER.error("Unexpected error in _on_message: %s", err)
+    def _apply_mqtt_update(self, state, metrics, available):
+        """Apply a fully validated message and notify only on the HA loop."""
+        changed = state is not None or bool(metrics) or self.available != available
+        if state is not None:
+            self.state = state
+        self.metrics.update(metrics)
+        self.available = available
+        if changed:
+            self._publish_update()
 
     async def _async_mqtt_job(self, job):
         """Keep the lifecycle lock held until a cancelled executor job finishes."""
@@ -312,6 +348,7 @@ class QuboHub:
                 # Do not leak response bodies/tokens or allow commands to proceed
                 # after an HTTP, validation, or MQTT restart failure.
                 raise QuboHubError("Unable to refresh Qubo connection") from None
+
 
     async def turn_on(self):
         """Turn on the device."""

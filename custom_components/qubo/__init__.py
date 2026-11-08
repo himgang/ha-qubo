@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api import validate_identifier, validate_login_response
 from .const import (
     APP_ID,
     BASE_URL,
@@ -63,15 +64,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         async with session.post(
-            login_url, json=payload, headers=headers, params=params
+            login_url, json=payload, headers=headers, params=params,
+            allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
         ) as response:
             # Check for errors BEFORE calling raise_for_status()
-            if response.status >= 400:
-                error_text = await response.text()
+            if response.status != 200:
                 _LOGGER.error(
-                    "Qubo API Login Failed! Status: %s, Server said: %s",
+                    "Qubo login returned HTTP status %s",
                     response.status,
-                    error_text,
                 )
                 return False  # Stop setting up the integration
 
@@ -79,13 +79,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data = await response.json()
 
             # Extract your tokens (Adjust keys based on Qubo's actual JSON response)
-            access_token = data.get("accessToken")
-            refresh_token = data.get("refreshToken")
-            user_uuid = data.get("uuid")
+            access_token, refresh_token, user_uuid, expires_in = validate_login_response(data)
 
             # Calculate expiration time (current time + 3600 seconds)
             # We subtract 60 seconds just to give a safe buffer
-            expires_in = data.get("expires_in", 3600)
             expires_at = time.time() + expires_in - 60
 
             _LOGGER.info("Successfully authenticated with Qubo API")
@@ -107,14 +104,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             sync_payload = {"syncType": 1}
 
             async with session.post(
-                sync_url, headers=sync_headers, json=sync_payload
+                sync_url, headers=sync_headers, json=sync_payload,
+                allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
             ) as sync_response:
+                if sync_response.status != 200:
+                    _LOGGER.error("Qubo sync returned HTTP status %s", sync_response.status)
+                    return False
                 sync_response.raise_for_status()
                 sync_data = await sync_response.json()
+                if not isinstance(sync_data, dict):
+                    raise ValueError("Invalid sync response")
 
                 # 1. Extract Device & Unit UUIDs
                 # Assuming you only have one device, or we just grab the first one
                 devices = sync_data.get("devices", [])
+                if not isinstance(devices, list):
+                    raise ValueError("Invalid device list")
                 if not devices:
                     _LOGGER.error("No devices found in Qubo account!")
                     return False
@@ -136,8 +141,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     )
                     return False
 
-                device_uuid = qubo_device.get("deviceUUID")
-                unit_uuid = qubo_device.get("unitUUID")
+                device_uuid = validate_identifier(qubo_device.get("deviceUUID"))
+                unit_uuid = validate_identifier(qubo_device.get("unitUUID"))
                 device_name = qubo_device.get("deviceName")
                 handle_name = qubo_device.get("handleName")
 
@@ -161,8 +166,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 _LOGGER.info("Successfully fetched Qubo data for: %s", device_name)
 
-    except aiohttp.ClientError as err:
-        _LOGGER.error("Failed to connect to Qubo API: %s", err)
+    except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError):
+        _LOGGER.error("Qubo setup failed: invalid response or connection failure")
         return False
 
     # Create the shared Hub and start it

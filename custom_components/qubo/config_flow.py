@@ -3,12 +3,14 @@
 import logging
 import uuid
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api import validate_login_response
 from .const import (
     APP_ID,
     BASE_URL,
@@ -63,24 +65,25 @@ async def validate_input(hass: HomeAssistant, data: dict) -> dict:
 
     try:
         async with session.post(
-            login_url, json=payload, headers=headers, params=params
+            login_url, json=payload, headers=headers, params=params,
+            allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
         ) as response:
             _LOGGER.debug("Login response status: %s", response.status)
             
-            if response.status >= 400:
-                response_text = await response.text()
-                _LOGGER.error("Login failed with status %s. Response: %s", response.status, response_text)
+            if response.status != 200:
+                _LOGGER.error("Qubo login returned HTTP status %s", response.status)
                 
             if response.status in {401, 403}:
                 raise InvalidAuth
-            if response.status >= 400:
+            if response.status != 200:
                 raise CannotConnect
 
-            # If we get here, credentials are valid!
+            validate_login_response(await response.json())
             return {"title": data[CONF_USERNAME], "client_id": client_id}
-    except Exception as err:
-        _LOGGER.error("Exception during Qubo login: %s", err)
-        raise
+    except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
+        # Remote response bodies and exception messages may contain credentials.
+        _LOGGER.error("Qubo login failed: invalid response or connection failure")
+        raise CannotConnect from None
 
 
 class QuboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -115,7 +118,7 @@ class QuboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.error("Unexpected Qubo configuration failure")
                 errors["base"] = "unknown"
 
         # Show the form to the user
