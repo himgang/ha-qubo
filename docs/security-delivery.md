@@ -12,7 +12,7 @@ Four scoped branches are available for separate review:
   atomic HA-loop updates and removal of raw incoming payload logs. 18 tests.
 - `fix/serialized-token-refresh`: serialized refresh/lifecycle, validated token
   rotation, executor teardown, fail-closed commands and safe errors. 19 tests.
-- `fix/pin-reviewed-dependencies`: compatible exact MQTT dependency, SHA-pinned
+- `fix/pin-reviewed-dependencies`: minimum compatible MQTT dependency, SHA-pinned
   action wrappers, least privilege and Python regression CI. 6 tests.
 
 `security/combined-validation` contains all four patch sets with the overlapping

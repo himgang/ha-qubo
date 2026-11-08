@@ -54,7 +54,7 @@ requires certificate verification and hostname checks.
   event-loop state application and no raw payload logging.
 - `fix/serialized-token-refresh`: serialized validated refresh and coordinated
   nonblocking MQTT lifecycle.
-- `fix/pin-reviewed-dependencies`: exact compatible MQTT dependency and verified
+- `fix/pin-reviewed-dependencies`: minimum compatible MQTT dependency and verified
   immutable workflow references, least privilege and regression-test CI.
 
 These are proposed changes, not a claim that all branches are already merged or
