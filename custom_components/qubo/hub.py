@@ -40,7 +40,8 @@ class QuboHub:
         device_name,
         handle_name,
         client_id,  # Accept the client_id in the constructor
-        initial_availability
+        initial_availability,
+        *, entry=None, phone_auth=False
     ) -> None:
         """Initialize the Qubo hub."""
         self.hass = hass
@@ -50,6 +51,11 @@ class QuboHub:
         self._expires_at = expires_at
         self._lifecycle_lock = asyncio.Lock()
         self._stopped = False
+        self._entry = entry
+        self._phone_auth = phone_auth
+        self._reauth_started = False
+        self._mqtt_auth_rejected = False
+        self._last_reauth_attempt = None
         self._mqtt_needs_restart = False
         self._mqtt_tls_configured = False
 
@@ -105,6 +111,17 @@ class QuboHub:
             callback()
 
     def _on_connect(self, client, userdata, flags, rc):
+        if self._phone_auth and rc in (4, 5):
+            # Paho invokes this on its network thread. Fail closed immediately,
+            # then serialize shutdown and reauth on the HA event loop.
+            self._mqtt_auth_rejected = True
+            try:
+                self.hass.loop.call_soon_threadsafe(self._schedule_mqtt_auth_failure)
+            except RuntimeError:
+                pass  # The HA event loop is already closed.
+            return
+        if self._phone_auth and (self._reauth_started or self._mqtt_auth_rejected or time.time() >= self._expires_at):
+            return
         if rc == 0:
             _LOGGER.debug("Successfully connected to Qubo MQTT broker")
             client.subscribe(
@@ -112,6 +129,19 @@ class QuboHub:
             )
         else:
             _LOGGER.error("Failed to connect to Qubo MQTT broker, return code %s", rc)
+
+    def _schedule_mqtt_auth_failure(self):
+        """Schedule rejection handling on the HA loop, not Paho's thread."""
+        if not self._stopped:
+            self.hass.async_create_task(self._handle_mqtt_auth_failure())
+
+    async def _handle_mqtt_auth_failure(self):
+        try:
+            async with self._lifecycle_lock:
+                if not self._stopped:
+                    await self._expire_phone_session()
+        except Exception:
+            _LOGGER.exception("Unable to handle Qubo MQTT authentication failure")
 
     @staticmethod
     def _mqtt_object(data, *path):
@@ -212,6 +242,8 @@ class QuboHub:
 
     def _apply_mqtt_update(self, state, metrics, available):
         """Apply a fully validated message and notify only on the HA loop."""
+        if self._phone_auth and (self._reauth_started or self._mqtt_auth_rejected or time.time() >= self._expires_at):
+            return
         changed = state is not None or bool(metrics) or self.available != available
         if state is not None:
             self.state = state
@@ -239,6 +271,10 @@ class QuboHub:
     async def start(self):
         """Start MQTT without racing a refresh or an unload."""
         async with self._lifecycle_lock:
+            if self._phone_auth and time.time() >= self._expires_at:
+                from homeassistant.exceptions import ConfigEntryAuthFailed
+                raise ConfigEntryAuthFailed("Qubo phone session expired")
+
             def connect_mqtt():
                 if not self._mqtt_tls_configured:
                     context = ssl.create_default_context()
@@ -251,7 +287,7 @@ class QuboHub:
             self._stopped = False
             if self._unsub_refresh is None:
                 self._unsub_refresh = async_track_time_interval(
-                    self.hass, self._send_meter_refresh, timedelta(seconds=60)
+                    self.hass, self._periodic_meter_refresh if self._phone_auth else self._send_meter_refresh, timedelta(seconds=60)
                 )
 
         await self._send_meter_refresh()
@@ -270,12 +306,52 @@ class QuboHub:
 
             await self._async_mqtt_job(stop_mqtt)
 
+    async def _periodic_meter_refresh(self, now=None):
+        """Keep a quiet timer to retry dismissed reauth flows."""
+        try:
+            await self._send_meter_refresh(now)
+        except QuboHubError:
+            if not self._reauth_started:
+                raise
+
+    async def _expire_phone_session(self):
+        """Called under the lifecycle lock; phone tokens always require reauth.
+
+        Even when a refresh token was supplied, avoid rotating an unpersisted
+        phone session. A new OTP flow obtains a durable replacement instead.
+        """
+        if not self._reauth_started:
+            self._reauth_started = True
+            self.available = False
+            self._publish_update()
+            def disconnect():
+                try:
+                    self._mqtt_client.disconnect()
+                finally:
+                    self._mqtt_client.loop_stop()
+            try:
+                await self._async_mqtt_job(disconnect)
+            except (OSError, RuntimeError):
+                _LOGGER.warning("Unable to disconnect expired Qubo session")
+        # HA deduplicates active flows. Retrying allows recovery if the user
+        # dismissed a flow or entered a different account; no OTP is sent here.
+        now = time.monotonic()
+        if self._last_reauth_attempt is None or now - self._last_reauth_attempt >= 60:
+            self._last_reauth_attempt = now
+            try:
+                self._entry.async_start_reauth(self.hass)
+            except Exception:
+                _LOGGER.exception("Unable to start Qubo reauthentication")
+
     async def _async_refresh_token_if_needed(self):
         # The expiry check must be inside the same lock as refresh and teardown:
         # concurrent commands must not rotate the same refresh token twice.
         async with self._lifecycle_lock:
             if self._stopped:
                 raise QuboHubError("Qubo hub is stopped")
+            if self._phone_auth and (self._reauth_started or self._mqtt_auth_rejected or time.time() >= self._expires_at):
+                await self._expire_phone_session()
+                raise QuboHubError("Qubo phone session requires reauthentication")
             if time.time() < self._expires_at and not self._mqtt_needs_restart:
                 return
 

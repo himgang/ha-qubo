@@ -1,6 +1,7 @@
 """Config flow for the Qubo integration."""
 
 import logging
+import time
 import uuid
 
 import aiohttp
@@ -11,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import validate_login_response
+from .phone_auth import InvalidOtp, PhoneAuthError, request_phone_otp, verify_phone_otp
 from .const import (
     APP_ID,
     BASE_URL,
@@ -92,39 +94,151 @@ class QuboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial step."""
-        errors = {}
+        """Choose an authentication method; accept legacy password submissions."""
+        if user_input and CONF_USERNAME in user_input:
+            return await self.async_step_password(user_input)
+        if user_input:
+            if user_input["auth_mode"] == "phone":
+                return await self.async_step_phone()
+            return await self.async_step_password()
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({vol.Required("auth_mode", default="password"): vol.In(["password", "phone"])}),
+        )
 
+    async def async_step_password(self, user_input=None):
+        """Keep the existing username/password login behavior."""
+        errors = {}
         if user_input is not None:
             try:
-                # Make sure the integration isn't already set up
+                info = await validate_input(self.hass, user_input)
                 await self.async_set_unique_id(user_input[CONF_USERNAME])
                 self._abort_if_unique_id_configured()
-
-                info = await validate_input(self.hass, user_input)
-
-                # Save the credentials AND the newly generated client ID
-                data_to_save = {
+                return self.async_create_entry(title=info["title"], data={
                     CONF_USERNAME: user_input[CONF_USERNAME],
                     CONF_PASSWORD: user_input[CONF_PASSWORD],
-                    "client_id": info["client_id"] # Save it here!
-                }
-
-                # Save the credentials and create the integration entry
-                return self.async_create_entry(title=info["title"], data=data_to_save)
-
+                    "client_id": info["client_id"],
+                })
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.error("Unexpected Qubo configuration failure")
+            except (ValueError, TypeError, aiohttp.ClientError, TimeoutError):
                 errors["base"] = "unknown"
+        return self.async_show_form(step_id="password", data_schema=DATA_SCHEMA, errors=errors)
 
-        # Show the form to the user
-        return self.async_show_form(
-            step_id="user", data_schema=DATA_SCHEMA, errors=errors
-        )
+    async def async_step_reauth(self, entry_data):
+        """Reauthenticate the existing phone entry, retaining its client ID."""
+        self._reauth_entry = self._get_reauth_entry()
+        if self._reauth_entry.data.get("auth_mode") != "phone":
+            return self.async_abort(reason="reauth_not_supported")
+        return await self.async_step_phone()
+
+    async def async_step_phone(self, user_input=None):
+        """Request a new one-time code; each request resets old state."""
+        errors = {}
+        if user_input is not None:
+            self._phone = user_input["phone"].strip()
+            self._country_code = user_input["country_code"].strip()
+            self._client_id = (self._reauth_entry.data.get("client_id")
+                               if getattr(self, "_reauth_entry", None) else None) or uuid.uuid4().hex[:16]
+            self._session_uuid = None
+            self._profiles = None
+            try:
+                self._session_uuid = await request_phone_otp(
+                    self.hass, self._phone, self._country_code, self._client_id
+                )
+                self._session_started = time.monotonic()
+                return await self.async_step_otp()
+            except PhoneAuthError:
+                errors["base"] = "cannot_connect"
+            except Exception:
+                errors["base"] = "unknown"
+        old = getattr(self, "_reauth_entry", None)
+        data = old.data if old else {}
+        schema = vol.Schema({
+            vol.Required("phone", default=data.get("phone", "")): str,
+            vol.Required("country_code", default=data.get("country_code", "+91")): str,
+        })
+        return self.async_show_form(step_id="phone", data_schema=schema, errors=errors)
+
+    async def async_step_otp(self, user_input=None):
+        """Verify the code without persisting it or logging remote errors."""
+        if not getattr(self, "_session_uuid", None) or time.monotonic() - self._session_started > 300:
+            self._session_uuid = None
+            return await self.async_step_phone()
+        errors = {}
+        if user_input is not None:
+            try:
+                profiles = await verify_phone_otp(
+                    self.hass, self._phone, self._country_code, self._client_id,
+                    self._session_uuid, user_input["code"],
+                )
+                self._session_uuid = None
+                self._profiles = {p["uuid"]: p for p in profiles if p.get("uuid") and p.get("accessToken")}
+                self._profiles_received_at = time.time()
+                if not self._profiles:
+                    errors["base"] = "invalid_auth"
+                else:
+                    self._profiles_started = time.monotonic()
+            except InvalidOtp:
+                errors["base"] = "invalid_otp"
+            except PhoneAuthError:
+                errors["base"] = "cannot_connect"
+            except Exception:
+                errors["base"] = "unknown"
+            if self._profiles:
+                if len(self._profiles) == 1:
+                    return await self._finish_phone(next(iter(self._profiles)))
+                return await self.async_step_profile()
+            # Failed verification requires a fresh challenge, never reuse a session.
+            self._session_uuid = None
+            return self.async_show_form(step_id="phone", data_schema=vol.Schema({
+                vol.Required("phone", default=self._phone): str,
+                vol.Required("country_code", default=self._country_code): str,
+            }), errors=errors)
+        return self.async_show_form(step_id="otp", data_schema=vol.Schema({vol.Required("code"): str}), errors=errors)
+
+    async def async_step_profile(self, user_input=None):
+        """Select among verified profiles without revealing profile details."""
+        if not getattr(self, "_profiles", None) or time.monotonic() - self._profiles_started > 300:
+            self._profiles = None
+            return await self.async_step_phone()
+        if user_input is not None and user_input.get("profile") in self._profiles:
+            return await self._finish_phone(user_input["profile"])
+        choices = {key: f"Account {index + 1} (…{key[-4:]})" for index, key in enumerate(self._profiles)}
+        return self.async_show_form(step_id="profile", data_schema=vol.Schema({vol.Required("profile"): vol.In(choices)}))
+
+    async def _finish_phone(self, profile_id):
+        """Store only the chosen profile's credentials and reload on reauth."""
+        profile = self._profiles[profile_id]
+        reauth = getattr(self, "_reauth_entry", None)
+        if reauth and reauth.data.get("user_uuid") != profile_id:
+            self._profiles = None
+            return self.async_abort(reason="wrong_account")
+        ttl = profile["expires_in"]
+        expires_at = self._profiles_received_at + ttl - 60
+        if expires_at <= time.time():
+            self._profiles = None
+            return await self.async_step_phone()
+        data = {
+            "auth_mode": "phone", "phone": self._phone, "country_code": self._country_code,
+            "client_id": self._client_id, "user_uuid": profile_id,
+            "access_token": profile["accessToken"], "expires_at": expires_at,
+        }
+        if profile.get("refreshToken"):
+            data["refresh_token"] = profile["refreshToken"]
+        self._profiles = None
+        if reauth:
+            await self.async_set_unique_id(profile_id)
+            self._abort_if_unique_id_mismatch(reason="wrong_account")
+            # data_updates merges with existing entry data, so explicitly clear an
+            # old refresh token when the newly authenticated profile has none.
+            data.setdefault("refresh_token", None)
+            return self.async_update_reload_and_abort(reauth, data_updates=data)
+        await self.async_set_unique_id(profile_id)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(title=f"Qubo (…{profile_id[-4:]})", data=data)
 
 
 class CannotConnect(Exception):
