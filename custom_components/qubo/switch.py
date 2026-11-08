@@ -10,8 +10,8 @@ from .const import DOMAIN
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: callable):
     """Set up the Qubo switch platform from a config entry."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    async_add_entities([QuboSwitch(hub)])
+    hubs = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([QuboSwitch(hub) for hub in hubs])
 
 class QuboSwitch(SwitchEntity):
     """Representation of a Qubo smart plug switch."""
