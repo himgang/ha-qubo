@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import validate_login_response
-from .phone_auth import InvalidOtp, PhoneAuthError, request_phone_otp, verify_phone_otp
+from .phone_auth import InvalidOtp, PhoneAuthError, exchange_phone_profile, request_phone_otp, verify_phone_otp
 from .const import (
     APP_ID,
     BASE_URL,
@@ -221,6 +221,15 @@ class QuboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if expires_at <= time.time():
             self._profiles = None
             return await self.async_step_phone()
+        try:
+            profile = await exchange_phone_profile(self.hass, profile, self._client_id)
+        except PhoneAuthError:
+            self._profiles = None
+            return self.async_show_form(step_id="phone", data_schema=vol.Schema({
+                vol.Required("phone", default=self._phone): str,
+                vol.Required("country_code", default=self._country_code): str,
+            }), errors={"base": "cannot_connect"})
+        expires_at = time.time() + profile["expires_in"] - 60
         data = {
             "auth_mode": "phone", "phone": self._phone, "country_code": self._country_code,
             "client_id": self._client_id, "user_uuid": profile_id,

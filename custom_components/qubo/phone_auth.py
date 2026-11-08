@@ -5,17 +5,14 @@ Protocol references: selvakk2k/qubopy auth.py and const.py at commit
 implemented; these unofficial endpoints and session lifetimes may change.
 """
 
-import base64
-import json
-import math
 import re
 import time
 
 import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import validate_identifier
-from .const import BASE_URL, DEVICE_ATTRIBUTE
+from .api import jwt_remaining, validate_identifier, validate_login_response
+from .const import BASE_URL, DEVICE_ATTRIBUTE, LOGIN_DEVICE_NAME
 
 _PROVIDER = "d10e4bfb0153496e8e8bb955f7ebe413"
 _PHONE_BASE = f"{BASE_URL}sms/api/v1/sp/{_PROVIDER}/user/phone/"
@@ -38,21 +35,6 @@ def _validate_phone(phone, country_code):
         raise PhoneAuthError("Invalid country code")
 
 
-def _jwt_remaining(token, now):
-    """Use unverified JWT expiry only to shorten, never extend, a session."""
-    try:
-        parts = token.split(".")
-        if len(parts) != 3 or len(parts[1]) > 8192:
-            return None
-        body = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
-        exp = body.get("exp")
-        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
-            return None
-        return exp - now
-    except (ValueError, TypeError, UnicodeError, OverflowError, AttributeError):
-        return None
-
-
 def _profile(data, now):
     """Normalize Qubo's documented profile variants, fail closed on bad fields."""
     if not isinstance(data, dict):
@@ -73,7 +55,7 @@ def _profile(data, now):
         if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 60 < raw <= 604800:
             raise PhoneAuthError("Invalid authentication response")
         lifetime = min(lifetime, raw)
-    remaining = _jwt_remaining(token, now)
+    remaining = jwt_remaining(token, now)
     if remaining is not None:
         lifetime = min(lifetime, remaining)
     if not 60 < lifetime <= 3600:
@@ -82,6 +64,10 @@ def _profile(data, now):
     if refresh is not None and (not isinstance(refresh, str) or not refresh.strip() or len(refresh) > 32768):
         raise PhoneAuthError("Invalid authentication response")
     result = {"uuid": account_id, "accessToken": token, "expires_in": lifetime}
+    email = data.get("email", "")
+    if not isinstance(email, str) or len(email) > 320:
+        raise PhoneAuthError("Invalid authentication response")
+    result["email"] = email
     if refresh:
         result["refreshToken"] = refresh
     return result
@@ -144,3 +130,38 @@ async def verify_phone_otp(hass, phone, country_code, client_id, session_uuid, c
     if len({profile["uuid"] for profile in profiles}) != len(profiles):
         raise PhoneAuthError("Ambiguous authentication response")
     return profiles
+
+
+async def exchange_phone_profile(hass, profile, client_id):
+    """Exchange the selected OTP profile for the app's renewable session."""
+    try:
+        validate_identifier(client_id)
+        validate_identifier(profile["uuid"])
+        url = f"{BASE_URL}sms/api/v1/sp/{_PROVIDER}/user/emailprofile/login"
+        headers = {
+            "Content-Type": "application/json", "App-Id": _PHONE_APP_ID,
+            "Source": "ANDROID", "Source-Device-Id": client_id,
+            "Login-Device-Name": LOGIN_DEVICE_NAME, "App-Type": "HOME",
+            "Token-Type": "USER", "User-UUID": profile["uuid"],
+            "Subscriber-Key": profile["accessToken"],
+        }
+        async with async_get_clientsession(hass).post(
+            url, json={"username": profile["email"], "deviceAttribute": DEVICE_ATTRIBUTE},
+            headers=headers, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            if response.status != 200:
+                raise PhoneAuthError("Phone session exchange rejected")
+            data = await response.json()
+        access, refresh, user_uuid, lifetime = validate_login_response(data)
+        if user_uuid != profile["uuid"]:
+            raise PhoneAuthError("Phone session account mismatch")
+        lifetime = min(lifetime, 900)
+        remaining = jwt_remaining(access, time.time())
+        if remaining is not None:
+            lifetime = min(lifetime, remaining)
+        if lifetime <= 60:
+            raise PhoneAuthError("Phone session already expired")
+        return {"uuid": user_uuid, "accessToken": access,
+                "refreshToken": refresh, "expires_in": lifetime}
+    except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, KeyError):
+        raise PhoneAuthError("Phone session exchange unavailable") from None

@@ -14,7 +14,7 @@ import paho.mqtt.client as mqtt
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import BASE_URL, LOGIN_DEVICE_NAME
+from .session import SessionRejected, persist_phone_session, refresh_credentials
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -329,11 +329,7 @@ class QuboHub:
                 raise
 
     async def _expire_phone_session(self):
-        """Called under the lifecycle lock; phone tokens always require reauth.
-
-        Even when a refresh token was supplied, avoid rotating an unpersisted
-        phone session. A new OTP flow obtains a durable replacement instead.
-        """
+        """Disconnect and request a new OTP when credentials cannot be renewed."""
         if not self._reauth_started:
             self._reauth_started = True
             self.available = False
@@ -363,7 +359,7 @@ class QuboHub:
         async with self._lifecycle_lock:
             if self._stopped:
                 raise QuboHubError("Qubo hub is stopped")
-            if self._phone_auth and (self._reauth_started or self._mqtt_auth_rejected or time.time() >= self._expires_at):
+            if self._phone_auth and (self._reauth_started or self._mqtt_auth_rejected):
                 await self._expire_phone_session()
                 raise QuboHubError("Qubo phone session requires reauthentication")
             if self._auth is not None:
@@ -372,62 +368,28 @@ class QuboHub:
                 self._access_token = self._auth.access_token
                 self._refresh_token = self._auth.refresh_token
                 self._expires_at = self._auth.expires_at
+            if self._phone_auth and time.time() >= self._expires_at and not self._refresh_token:
+                await self._expire_phone_session()
+                raise QuboHubError("Qubo phone session requires reauthentication")
             if time.time() < self._expires_at and not self._mqtt_needs_restart:
                 return
 
             try:
                 if time.time() >= self._expires_at:
                     _LOGGER.info("Qubo access token expired. Refreshing")
-                    refresh_url = f"{BASE_URL}sms/api/v1/sp/d10e4bfb0153496e8e8bb955f7ebe413/users/{self._user_uuid}/auth/refresh"
-                    payload = {
-                        "accessToken": self._access_token,
-                        "refreshToken": self._refresh_token,
-                    }
-                    headers = {
-                        "Host": "srvcapp.platform.quboworld.com",
-                        "User-Agent": "libcurl-agent restclient-cpp/2:1:1",
-                        "Accept": "*/*",
-                        "Login-Device-Name": LOGIN_DEVICE_NAME,
-                        "Source-Device-Id": self._client_id,
-                        "Token-Type": "USER",
-                    }
-                    async with self.session.post(
-                        refresh_url, json=payload, headers=headers,
-                        allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
-                    ) as response:
-                        if response.status != 200:
-                            raise aiohttp.ClientError("Unexpected refresh HTTP status")
-                        response.raise_for_status()
-                        data = await response.json()
-
-                    if not isinstance(data, dict):
-                        raise ValueError("Invalid token response")
-                    access_token = data.get("accessToken")
-                    refresh_token = data.get("refreshToken", self._refresh_token)
-                    if not isinstance(access_token, str) or not access_token.strip():
-                        raise ValueError("Invalid access token")
-                    if not isinstance(refresh_token, str) or not refresh_token.strip():
-                        raise ValueError("Invalid refresh token")
-                    expires_in = data.get("expires_in", 3600)
-                    # Allow at most seven days, and require a lifetime longer than
-                    # the 60-second safety margin. Missing lifetime keeps the
-                    # historical one-hour default; malformed values fail closed.
-                    if (
-                        isinstance(expires_in, bool)
-                        or not isinstance(expires_in, (int, float))
-                        or not 60 < expires_in <= 604800
-                        or not math.isfinite(expires_in)
-                    ):
-                        raise ValueError("Invalid token lifetime")
-
-                    # Commit only after the entire response is validated.
+                    access_token, refresh_token, expires_at = await refresh_credentials(
+                        self.session, self._user_uuid, self._client_id,
+                        self._access_token, self._refresh_token, now=time.time(), phone=self._phone_auth,
+                    )
+                    if self._phone_auth:
+                        persist_phone_session(self.hass, self._entry, access_token, refresh_token, expires_at)
                     self._access_token = access_token
                     self._refresh_token = refresh_token
-                    self._expires_at = time.time() + expires_in - 60
+                    self._expires_at = expires_at
                     if self._auth is not None:
                         self._auth.access_token = access_token
                         self._auth.refresh_token = refresh_token
-                        self._auth.expires_at = self._expires_at
+                        self._auth.expires_at = expires_at
                     self._mqtt_needs_restart = True
 
                 def restart_mqtt():
@@ -441,6 +403,10 @@ class QuboHub:
 
                 await self._async_mqtt_job(restart_mqtt)
                 self._mqtt_needs_restart = False
+            except SessionRejected:
+                if self._phone_auth:
+                    await self._expire_phone_session()
+                raise QuboHubError("Qubo session refresh rejected") from None
             except (
                 aiohttp.ClientError, TimeoutError, ValueError, TypeError,
                 OSError, RuntimeError,

@@ -65,11 +65,34 @@ class PhoneRuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(AuthFailed):
                 await PACKAGE.async_setup_entry(hass, self.entry)
 
+    async def test_expired_saved_phone_session_refreshes_before_sync(self):
+        self.entry.data.update(expires_at=0, refresh_token="old-refresh")
+        session = Mock()
+        session.post.return_value = Response()
+        hass = types.SimpleNamespace(session=session, data={}, config_entries=types.SimpleNamespace(
+            async_update_entry=Mock(), async_forward_entry_setups=AsyncMock()))
+        hub = types.SimpleNamespace(start=AsyncMock())
+        new_expiry = time.time() + 800
+        with patch.object(PACKAGE, "refresh_credentials", AsyncMock(return_value=("renewed", "rotated", new_expiry))) as refresh, \
+             patch.object(PACKAGE, "QuboHub", return_value=hub):
+            self.assertTrue(await PACKAGE.async_setup_entry(hass, self.entry))
+        refresh.assert_awaited_once()
+        self.assertEqual(session.post.call_args.kwargs["headers"]["Subscriber-Key"], "renewed")
+        saved = hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        self.assertEqual(saved["refresh_token"], "rotated")
+
+    async def test_rejected_saved_phone_refresh_requires_reauth(self):
+        self.entry.data.update(expires_at=0, refresh_token="old-refresh")
+        hass = types.SimpleNamespace(session=Mock())
+        with patch.object(PACKAGE, "refresh_credentials", AsyncMock(side_effect=PACKAGE.SessionRejected)):
+            with self.assertRaises(AuthFailed):
+                await PACKAGE.async_setup_entry(hass, self.entry)
+
     async def test_expiry_concurrent_commands_disconnect_and_reauth_once(self):
         hass = FakeHass()
         session = FakeSession({})
         with patch.object(hub_module.mqtt, "Client", FakeClient):
-            hub = hub_module.QuboHub(hass, session, "secret", "optional-refresh", "user", "device", "unit", time.time() + 300, False, "Plug", "handle", "client", True, entry=self.entry, phone_auth=True)
+            hub = hub_module.QuboHub(hass, session, "secret", None, "user", "device", "unit", time.time() + 300, False, "Plug", "handle", "client", True, entry=self.entry, phone_auth=True)
         with patch.object(hub_module, "async_track_time_interval", return_value=Mock()) as timer:
             await hub.start()
         client = hub._mqtt_client
@@ -92,6 +115,22 @@ class PhoneRuntimeTests(unittest.IsolatedAsyncioTestCase):
         hub._apply_mqtt_update(True, {}, True)
         self.assertFalse(hub.available)
         await hub.stop()
+
+    async def test_phone_refresh_is_shared_and_persisted(self):
+        hass = FakeHass()
+        hass.config_entries = types.SimpleNamespace(async_update_entry=Mock())
+        session = FakeSession({"accessToken": "new", "refreshToken": "rotated", "expires_in": 900})
+        auth = hub_module.QuboSession("secret", "old", 0)
+        with patch.object(hub_module.mqtt, "Client", FakeClient):
+            hubs = [hub_module.QuboHub(hass, session, "secret", "old", "user", device,
+                    "unit", 0, False, "Plug", "handle", "client", True,
+                    entry=self.entry, phone_auth=True, auth=auth) for device in ("one", "two")]
+        await asyncio.gather(*(hub.turn_on() for hub in hubs))
+        self.assertEqual(len(session.calls), 1)
+        hass.config_entries.async_update_entry.assert_called_once()
+        saved = hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        self.assertEqual((saved["access_token"], saved["refresh_token"]), ("new", "rotated"))
+        self.assertTrue(all(hub._access_token == "new" for hub in hubs))
 
     async def test_reauth_retry_throttled_after_dismissal(self):
         hass = FakeHass()

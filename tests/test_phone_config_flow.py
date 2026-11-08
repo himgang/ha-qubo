@@ -58,6 +58,7 @@ def load_flow():
     phone.InvalidOtp = type('InvalidOtp', (phone.PhoneAuthError,), {})
     phone.request_phone_otp = AsyncMock(return_value='session')
     phone.verify_phone_otp = AsyncMock()
+    phone.exchange_phone_profile = AsyncMock()
     modules = {pkg.__name__: pkg, 'homeassistant': ha, 'homeassistant.config_entries': entries,
                'homeassistant.core': core, 'homeassistant.helpers': types.ModuleType('homeassistant.helpers'),
                'homeassistant.helpers.aiohttp_client': client, 'voluptuous': vol, 'aiohttp': aiohttp,
@@ -77,6 +78,10 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         phone.request_phone_otp.reset_mock(side_effect=True, return_value=True)
         phone.request_phone_otp.return_value = 'session'
         phone.verify_phone_otp.reset_mock(side_effect=True, return_value=True)
+        phone.exchange_phone_profile.reset_mock(side_effect=True, return_value=True)
+        async def exchange(hass, profile, client_id):
+            return {**profile, 'refreshToken': 'renewable'}
+        phone.exchange_phone_profile.side_effect = exchange
         self.flow = flowmod.QuboConfigFlow()
         self.flow.hass = types.SimpleNamespace(config_entries=types.SimpleNamespace(
             async_update_entry=unittest.mock.Mock(), async_reload=AsyncMock()))
@@ -124,7 +129,7 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(helper.call_args.args[0], self.flow.entry)
         self.assertEqual(self.flow.entry.data['client_id'], 'existing')
         self.assertEqual(self.flow.entry.data['other'], 'keep')
-        self.assertIsNone(self.flow.entry.data['refresh_token'])
+        self.assertEqual(self.flow.entry.data['refresh_token'], 'renewable')
         self.flow.hass.config_entries.async_reload.assert_not_awaited()
         self.flow.hass.config_entries.async_update_entry.assert_not_called()
 

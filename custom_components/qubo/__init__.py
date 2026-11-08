@@ -22,6 +22,7 @@ from .const import (
     LOGIN_DEVICE_NAME,
 )
 from .hub import QuboHub, QuboSession
+from .session import SessionRejected, persist_phone_session, refresh_credentials
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,10 +50,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if (not isinstance(access_token, str) or not access_token.strip()
                     or isinstance(expires_at, bool)
                     or not isinstance(expires_at, (int, float))
-                    or not math.isfinite(expires_at) or expires_at <= time.time()):
+                    or not math.isfinite(expires_at)):
                 raise ValueError("Invalid phone session")
         except ValueError:
             raise ConfigEntryAuthFailed("Qubo phone session expired or invalid") from None
+        if expires_at <= time.time():
+            if not isinstance(refresh_token, str) or not refresh_token.strip():
+                raise ConfigEntryAuthFailed("Qubo phone session expired")
+            try:
+                access_token, refresh_token, expires_at = await refresh_credentials(
+                    session, user_uuid, client_id, access_token, refresh_token, phone=True)
+                persist_phone_session(hass, entry, access_token, refresh_token, expires_at)
+            except SessionRejected:
+                raise ConfigEntryAuthFailed("Qubo phone session rejected") from None
+            except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
+                from homeassistant.exceptions import ConfigEntryNotReady
+                raise ConfigEntryNotReady("Qubo session refresh temporarily unavailable") from None
     else:
         # --- YOUR LOGIN API CALL GOES HERE ---
         login_url = f"{BASE_URL}sms/api/v4/sp/d10e4bfb0153496e8e8bb955f7ebe413/user/login"  # Replace with actual Qubo URL

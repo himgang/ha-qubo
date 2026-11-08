@@ -64,8 +64,8 @@ class PhoneApiTests(unittest.IsolatedAsyncioTestCase):
         self.session.data = [{"userUUID": "user-1", "token": "test-token"},
                              {"userId": "user-2", "accessToken": "second", "expires_in": 600}]
         result = await self.verify()
-        self.assertEqual(result, [{"uuid": "user-1", "accessToken": "test-token", "expires_in": 3600},
-                                  {"uuid": "user-2", "accessToken": "second", "expires_in": 600}])
+        self.assertEqual(result, [{"uuid": "user-1", "accessToken": "test-token", "expires_in": 3600, "email": ""},
+                                  {"uuid": "user-2", "accessToken": "second", "expires_in": 600, "email": ""}])
         url, options = self.session.calls[0]
         self.assertTrue(url.endswith("/user/phone/verify"))
         self.assertEqual(options["json"]["otp"], "123456")
@@ -77,6 +77,20 @@ class PhoneApiTests(unittest.IsolatedAsyncioTestCase):
             await self.verify()
         self.assertNotIn("123456", str(exc.exception))
         self.assertNotIn("secret", str(exc.exception))
+
+    async def test_exchange_uses_selected_profile_and_validates_account(self):
+        profile = {"uuid": "user-1", "email": "person@example.test", "accessToken": "otp-token"}
+        self.session.data = {"uuid": "user-1", "accessToken": "session-token", "refreshToken": "refresh-token"}
+        result = await phone_auth.exchange_phone_profile(self.hass, profile, "client-1")
+        self.assertEqual(result["refreshToken"], "refresh-token")
+        url, options = self.session.calls[-1]
+        self.assertTrue(url.endswith("/user/emailprofile/login"))
+        self.assertEqual(options["json"], {"username": "person@example.test", "deviceAttribute": "HomeAssistant|Server|Integration"})
+        self.assertEqual(options["headers"]["Subscriber-Key"], "otp-token")
+        self.assertEqual(options["headers"]["User-UUID"], "user-1")
+        self.session.data["uuid"] = "other-user"
+        with self.assertRaises(phone_auth.PhoneAuthError):
+            await phone_auth.exchange_phone_profile(self.hass, profile, "client-1")
 
     async def test_reject_redirects(self):
         for status in (301, 302, 303, 307, 308):
