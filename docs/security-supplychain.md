@@ -6,9 +6,12 @@ absence of malicious code, or vulnerability-free action runtimes.
 
 ## Python requirements
 
-- Pin the integration requirement to `paho-mqtt==2.1.0`. The existing hub uses
+- Require `paho-mqtt>=2.1.0` in the integration manifest. The existing hub uses
   `mqtt.CallbackAPIVersion.VERSION1`, an API introduced in Paho 2.x; the old
-  `>=1.6.1` constraint permitted an incompatible version. The official
+  `>=1.6.1` constraint permitted an incompatible version. Home Assistant's
+  hassfest rejects an exact pin for a package HA itself provides, so its
+  version can follow HA updates. CI separately tests `paho-mqtt==2.1.0`.
+  Later versions remain subject to compatibility and security review. The official
   `eclipse-paho/paho.mqtt.python` release `v2.1.0` was published 2024-04-29.
 - CI runs CPython 3.13 with real `paho-mqtt==2.1.0`, `voluptuous==0.16.0`, and
   `aiohttp==3.14.5`. PyPI requires Python >=3.7, >=3.9 and >=3.10 respectively;

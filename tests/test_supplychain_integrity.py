@@ -25,7 +25,7 @@ class SupplyChainIntegrityTests(unittest.TestCase):
 
     def test_manifest_requires_reviewed_mqtt_api(self):
         manifest = json.loads((ROOT / "custom_components/qubo/manifest.json").read_text())
-        self.assertEqual(manifest["requirements"], ["paho-mqtt==2.1.0"])
+        self.assertEqual(manifest["requirements"], ["paho-mqtt>=2.1.0"])
         self.assertEqual(importlib.metadata.version("paho-mqtt"), "2.1.0")
         # Construct only; do not connect, start a loop, or access any device.
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
