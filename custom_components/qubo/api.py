@@ -2,6 +2,23 @@
 
 import math
 import re
+import base64
+import json
+
+
+def jwt_remaining(token, now):
+    """Read unverified expiry only to shorten a credential's lifetime."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3 or len(parts[1]) > 8192:
+            return None
+        body = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        exp = body.get("exp")
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+            return None
+        return exp - now
+    except (ValueError, TypeError, UnicodeError, OverflowError, AttributeError):
+        return None
 
 
 def validate_identifier(value):

@@ -8,7 +8,7 @@ This integration connects directly to Qubo's cloud servers and establishes a per
 * **UI Setup:** Fully configure the integration via the Home Assistant UI (Config Flow). No `configuration.yaml` editing required!
 * **Instant Control:** Toggle your smart plug on and off instantly.
 * **Energy Monitoring:** Live tracking of Power, Current, Voltage, and total energy consumption.
-* **Session management:** Email sessions refresh in the background; phone sessions may require another SMS code when they expire.
+* **Session management:** Email and phone sessions can refresh in the background; rejected or older phone sessions require another SMS code.
 * **Auto-Discovery:** Automatically discovers supported plugs and uses their Qubo names in Home Assistant.
 
 ## 🔌 Supported Devices
@@ -42,7 +42,7 @@ This is the easiest way to install and keep the integration updated.
 4. Choose **password** or **phone**. For password, enter your Qubo account email and password. For phone, enter the digits and country calling code (for example `+91`), then enter the SMS code in Home Assistant. If several accounts match, select the account that owns your plug.
 5. The integration will discover the supported plugs on the selected account and create their entities.
 
-**Phone session limitation:** The unofficial phone API has been reported to return a roughly one-hour access token without a refresh token. This integration conservatively asks for a new SMS code via Home Assistant reauthentication when that session expires, including after a restart with expired credentials. During reauthentication the entities are unavailable and commands are not sent. The official app may use a different renewal mechanism; that has not been established. The phone flow is based on the third-party [`qubopy` protocol implementation](https://github.com/selvakk2k/qubopy/tree/2ff6a214792be5ff57f0edbc314c25c54e5e48c3), not an official Qubo API specification, and has not been tested against a live account. Do not send one-time codes or session tokens in logs, issues or chat. Home Assistant stores the phone session token in its configuration; protect its configuration directory and backups.
+**Phone sessions:** The integration exchanges the OTP result for a renewable session and stores the resulting access and refresh tokens in Home Assistant's configuration. Existing phone entries created before this change must complete SMS reauthentication to obtain a refresh token. If refresh credentials are rejected, another SMS login is required. This uses unofficial Qubo endpoints and the exchange has not yet been validated against a live account. Do not share one-time codes or session tokens; protect your Home Assistant configuration and backups.
 
 ## 📊 Entities Created
 Once configured, the integration will create a Home Assistant device for each discovered plug, with the following entities:
