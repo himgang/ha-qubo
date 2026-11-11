@@ -1,12 +1,12 @@
 {
   "domain": "qubo",
-  "name": "Qubo Smart Plug",
-  "codeowners": ["@Anonymous-AAA"],
+  "name": "Qubo Smart Plug Community",
+  "codeowners": ["@himgang"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/Anonymous-AAA/ha-qubo/blob/main/README.md",
+  "documentation": "https://github.com/himgang/ha-qubo/blob/main/README.md",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/Anonymous-AAA/ha-qubo/issues",
+  "issue_tracker": "https://github.com/himgang/ha-qubo/issues",
   "requirements": ["paho-mqtt>=2.1.0"],
   "version": "0.1.6"
 }

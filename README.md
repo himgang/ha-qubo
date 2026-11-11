@@ -1,6 +1,8 @@
-# Qubo Smart Plug for Home Assistant
+# Qubo Smart Plug Community for Home Assistant
 
 A custom integration for Home Assistant that allows you to control and monitor your Hero Electronix **Qubo Smart Plug 10A** via their cloud API.
+
+This community-maintained fork is based on [Anonymous-AAA/ha-qubo](https://github.com/Anonymous-AAA/ha-qubo), originally created by Alen Antony. It retains the original MIT license and copyright notice in [LICENSE](LICENSE).
 
 This integration connects directly to Qubo's cloud servers and establishes a persistent MQTT connection to give you instant switch control and real-time energy metrics.
 
@@ -23,10 +25,12 @@ This is the easiest way to install and keep the integration updated.
 
 1. Open Home Assistant and navigate to **HACS**.
 2. Go to **Integrations**, click the three dots in the top right corner, and select **Custom repositories**.
-3. Paste the URL of this repository: [https://github.com/Anonymous-AAA/ha-qubo](https://github.com/Anonymous-AAA/ha-qubo)
+3. Paste the URL of this repository: [https://github.com/himgang/ha-qubo](https://github.com/himgang/ha-qubo)
 4. Select **Integration** as the category and click **Add**.
-5. Click on the newly added **Qubo Smart Plug** integration and click **Download**.
+5. Click on the newly added **Qubo Smart Plug Community** integration and click **Download**.
 6. Restart Home Assistant.
+
+This fork and the original both use the `qubo` integration domain and install to the same directory. They cannot be installed independently side by side. Back up Home Assistant before switching, and avoid tracking both repositories in HACS to prevent one version overwriting the other.
 
 ### Method 2: Manual Installation
 1. Download the latest release from this repository.
@@ -38,7 +42,7 @@ This is the easiest way to install and keep the integration updated.
 
 1. In the Home Assistant UI, go to **Settings** -> **Devices & Services**.
 2. Click the **+ Add Integration** button in the bottom right corner.
-3. Search for **Qubo Smart Plug**.
+3. Search for **Qubo Smart Plug Community**.
 4. Choose **password** or **phone**. For password, enter your Qubo account email and password. For phone, enter the digits and country calling code (for example `+91`), then enter the SMS code in Home Assistant. If several accounts match, select the account that owns your plug.
 5. The integration will discover the supported plugs on the selected account and create their entities.
 
