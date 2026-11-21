@@ -6,12 +6,8 @@ import types
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from test_http_security import PACKAGE
+from test_http_security import AuthFailed, PACKAGE
 from test_hub_refresh import FakeClient, FakeHass, FakeSession, hub_module
-
-
-class AuthFailed(Exception):
-    pass
 
 
 class Response:

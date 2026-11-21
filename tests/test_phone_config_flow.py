@@ -12,7 +12,7 @@ class FlowAbort(Exception):
 
 
 def load_flow():
-    root = Path(__file__).resolve().parents[1] / 'custom_components' / 'qubo'
+    root = Path(__file__).resolve().parents[1] / 'custom_components' / 'qubo_community'
     pkg = types.ModuleType('_qubo_phone_flow_tests')
     pkg.__path__ = [str(root)]
     ha = types.ModuleType('homeassistant')
@@ -91,6 +91,28 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['step_id'], 'phone')
         result = await self.flow.async_step_phone({'phone': '5550000', 'country_code': '+91'})
         self.assertEqual(result['step_id'], 'otp')
+
+    async def test_password_reauth_retries_then_updates_existing_entry(self):
+        entry = self.flow.entry = types.SimpleNamespace(
+            data={'username': 'existing@example.test', 'password': 'old', 'client_id': 'existing-client'},
+        )
+        result = await self.flow.async_step_reauth(entry.data)
+        self.assertEqual(result['step_id'], 'reauth_password')
+        self.assertEqual(set(result['data_schema']), {'password'})
+        validate = AsyncMock(side_effect=[flowmod.InvalidAuth, {'client_id': 'existing-client'}])
+        with patch.object(flowmod, 'validate_input', validate):
+            result = await self.flow.async_step_reauth_password({'password': 'bad'})
+            self.assertEqual(result['errors'], {'base': 'invalid_auth'})
+            self.assertEqual(entry.data['password'], 'old')
+            result = await self.flow.async_step_reauth_password({'password': 'new'})
+        self.assertEqual(result['reason'], 'reauth_successful')
+        validate.assert_awaited_with(
+            self.flow.hass, {'username': 'existing@example.test', 'password': 'new'},
+            client_id='existing-client',
+        )
+        self.assertEqual(entry.data, {
+            'username': 'existing@example.test', 'password': 'new', 'client_id': 'existing-client',
+        })
 
     async def test_single_profile_and_no_code_saved(self):
         await self.start()

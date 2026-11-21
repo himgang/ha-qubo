@@ -18,6 +18,13 @@
           "password": "Password"
         }
       },
+      "reauth_password": {
+        "title": "Update your Qubo password",
+        "description": "Enter the current password for the account already linked to this integration.",
+        "data": {
+          "password": "Password"
+        }
+      },
       "phone": {
         "title": "Request a code",
         "description": "Enter your phone number and country calling code. A new code will be sent.",
@@ -49,8 +56,7 @@
     "abort": {
       "already_configured": "This Qubo account is already configured.",
       "reauth_successful": "Your account has been reauthenticated.",
-      "wrong_account": "The selected account does not match this integration.",
-      "reauth_not_supported": "Reauthentication is not supported for this sign-in method."
+      "wrong_account": "The selected account does not match this integration."
     }
   }
 }

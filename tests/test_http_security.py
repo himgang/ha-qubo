@@ -13,15 +13,24 @@ from unittest.mock import AsyncMock, Mock, patch
 import aiohttp
 from aiohttp import web
 
-ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "qubo"
+ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "qubo_community"
+
+class AuthFailed(Exception):
+    pass
+
+
+class NotReady(Exception):
+    pass
 
 
 def load_integration():
     """Import real integration source with only HA's framework stubbed."""
     names = ["homeassistant", "homeassistant.core", "homeassistant.config_entries",
              "homeassistant.helpers", "homeassistant.helpers.aiohttp_client",
-             "homeassistant.helpers.event"]
+             "homeassistant.helpers.event", "homeassistant.exceptions"]
     modules = {name: types.ModuleType(name) for name in names}
+    modules["homeassistant.exceptions"].ConfigEntryAuthFailed = AuthFailed
+    modules["homeassistant.exceptions"].ConfigEntryNotReady = NotReady
     class ConfigFlow:
         def __init_subclass__(cls, **kwargs):
             pass
@@ -124,14 +133,16 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         for status in (301, 302, 303, 307, 308):
             with self.subTest(status=status):
                 self.replies["login"] = (status, {})
-                self.assertFalse(await PACKAGE.async_setup_entry(self.hass, self.entry))
+                with self.assertRaises(NotReady):
+                    await PACKAGE.async_setup_entry(self.hass, self.entry)
                 self.assertEqual(self.sink_requests, [])
 
     async def test_sync_redirects_do_not_forward_custom_token_headers(self):
         for status in (301, 302, 303, 307, 308):
             with self.subTest(status=status):
                 self.replies["sync"] = (status, {})
-                self.assertFalse(await PACKAGE.async_setup_entry(self.hass, self.entry))
+                with self.assertRaises(NotReady):
+                    await PACKAGE.async_setup_entry(self.hass, self.entry)
                 self.assertEqual(self.sink_requests, [])
         self.assertEqual(self.requests[-1][1]["Subscriber-Key"], AUTH["accessToken"])
 
@@ -188,7 +199,7 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(desk.args[12])
         self.assertTrue(coffee.args[12])
         self.assertIs(desk.kwargs["auth"], coffee.kwargs["auth"])
-        self.assertEqual(self.hass.data["qubo"][self.entry.entry_id], hubs)
+        self.assertEqual(self.hass.data["qubo_community"][self.entry.entry_id], hubs)
         self.assertTrue(await PACKAGE.async_unload_entry(self.hass, self.entry))
         for hub in hubs:
             hub.start.assert_awaited_once()
@@ -203,7 +214,8 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
                               "unitUUID": "unit", "handleName": "plug", key: value}
                     self.replies["sync"] = (200, {"devices": [device]})
                     with patch.object(PACKAGE, "QuboHub") as hub_class:
-                        self.assertFalse(await PACKAGE.async_setup_entry(self.hass, self.entry))
+                        with self.assertRaises(NotReady):
+                            await PACKAGE.async_setup_entry(self.hass, self.entry)
                         hub_class.assert_not_called()
 
     async def test_invalid_response_schema_is_rejected(self):
@@ -218,7 +230,8 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
                 self.replies["login"] = (200, body)
                 with self.assertRaises(FLOW.CannotConnect):
                     await FLOW.validate_input(self.hass, INPUT)
-                self.assertFalse(await PACKAGE.async_setup_entry(self.hass, self.entry))
+                with self.assertRaises(NotReady):
+                    await PACKAGE.async_setup_entry(self.hass, self.entry)
 
     async def test_unexpected_status_is_rejected(self):
         for status in (201, 204, 400, 500):
@@ -233,6 +246,8 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
                 self.replies["login"] = (status, {})
                 with self.assertRaises(FLOW.InvalidAuth):
                     await FLOW.validate_input(self.hass, INPUT)
+                with self.assertRaises(AuthFailed):
+                    await PACKAGE.async_setup_entry(self.hass, self.entry)
 
     async def test_error_body_secrets_never_logged(self):
         marker = "SENSITIVE-SECRET-MARKER"
@@ -240,7 +255,8 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs(level=logging.ERROR) as logs:
             with self.assertRaises(FLOW.CannotConnect):
                 await FLOW.validate_input(self.hass, INPUT)
-            self.assertFalse(await PACKAGE.async_setup_entry(self.hass, self.entry))
+            with self.assertRaises(NotReady):
+                await PACKAGE.async_setup_entry(self.hass, self.entry)
         output = "\n".join(logs.output)
         self.assertNotIn(marker, output)
         self.assertLess(len(output), 1000)
@@ -251,12 +267,14 @@ class HttpSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs(level=logging.ERROR) as logs:
             with self.assertRaises(FLOW.CannotConnect):
                 await FLOW.validate_input(self.hass, INPUT)
-            self.assertFalse(await PACKAGE.async_setup_entry(self.hass, self.entry))
+            with self.assertRaises(NotReady):
+                await PACKAGE.async_setup_entry(self.hass, self.entry)
         self.assertNotIn("SENSITIVE-SECRET", "\n".join(logs.output))
 
     async def test_all_four_calls_have_explicit_redirect_and_timeout_policy(self):
         await FLOW.validate_input(self.hass, INPUT)
-        await PACKAGE.async_setup_entry(self.hass, self.entry)
+        with self.assertRaises(NotReady):
+            await PACKAGE.async_setup_entry(self.hass, self.entry)
         await self.hub()._async_refresh_token_if_needed()
         self.assertEqual([x[0] for x in self.routing.calls], ["login", "login", "sync", "refresh"])
         for _, kwargs in self.routing.calls:

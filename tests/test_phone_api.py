@@ -9,7 +9,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1] / "custom_components/qubo"
+ROOT = Path(__file__).resolve().parents[1] / "custom_components/qubo_community"
 package = types.ModuleType("_phone_api_test")
 package.__path__ = [str(ROOT)]
 ha = types.ModuleType("homeassistant")

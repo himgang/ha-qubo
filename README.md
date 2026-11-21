@@ -30,13 +30,22 @@ This is the easiest way to install and keep the integration updated.
 5. Click on the newly added **Qubo Smart Plug Community** integration and click **Download**.
 6. Restart Home Assistant.
 
-This fork and the original both use the `qubo` integration domain and install to the same directory. They cannot be installed independently side by side. Back up Home Assistant before switching, and avoid tracking both repositories in HACS to prevent one version overwriting the other.
+Version 0.3.0 uses the `qubo_community` integration domain and installs separately from the original `qubo` integration.
 
 ### Method 2: Manual Installation
 1. Download the latest release from this repository.
 2. Extract the zip file.
-3. Copy the entire `custom_components/qubo` directory into your Home Assistant's `config/custom_components/` directory.
+3. Copy the entire `custom_components/qubo_community` directory into your Home Assistant's `config/custom_components/` directory.
 4. Restart Home Assistant.
+
+### Moving from version 0.2.x or earlier
+
+Home Assistant treats the new domain as a separate integration. Existing entries do not migrate automatically.
+
+1. Back up Home Assistant and record your old entity IDs and any device-based automations.
+2. Disable the old Qubo entry if you are replacing it. Install version 0.3.0, restart Home Assistant, and add **Qubo Smart Plug Community** using your existing Qubo account.
+3. Confirm that the new entities report data. Update automations, dashboards, and Energy settings to use the new entities. If you want to reuse old entity IDs, free them first by renaming the old entities, then rename their new counterparts. Device-based automations still need to be updated to the new devices. Verify history and energy statistics separately before removing the old entry.
+4. Once verified, remove the old entry if you no longer need it. Back up before deleting an old manual installation folder and keep it if you use the original integration.
 
 ## ⚙️ Configuration
 

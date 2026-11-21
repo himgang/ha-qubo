@@ -34,7 +34,7 @@ DATA_SCHEMA = vol.Schema(
 )
 
 
-async def validate_input(hass: HomeAssistant, data: dict) -> dict:
+async def validate_input(hass: HomeAssistant, data: dict, *, client_id=None) -> dict:
     """Validate the user input allows us to connect."""
     session = async_get_clientsession(hass)
     login_url = f"{BASE_URL}sms/api/v4/sp/d10e4bfb0153496e8e8bb955f7ebe413/user/login"
@@ -47,7 +47,7 @@ async def validate_input(hass: HomeAssistant, data: dict) -> dict:
     }
 
     # Generate a random 16-character hex string for this specific Home Assistant instance
-    client_id = uuid.uuid4().hex[:16]
+    client_id = client_id or uuid.uuid4().hex[:16]
 
     headers = {
         "Content-Type": "application/json",
@@ -63,7 +63,6 @@ async def validate_input(hass: HomeAssistant, data: dict) -> dict:
 
     _LOGGER.debug("Attempting to login to Qubo with URL: %s", login_url)
     # Don't log password or full payload to avoid leaking credentials
-    _LOGGER.debug("Login headers: %s", headers)
 
     try:
         async with session.post(
@@ -128,11 +127,37 @@ class QuboConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="password", data_schema=DATA_SCHEMA, errors=errors)
 
     async def async_step_reauth(self, entry_data):
-        """Reauthenticate the existing phone entry, retaining its client ID."""
+        """Reauthenticate the existing entry with its configured sign-in method."""
         self._reauth_entry = self._get_reauth_entry()
-        if self._reauth_entry.data.get("auth_mode") != "phone":
-            return self.async_abort(reason="reauth_not_supported")
-        return await self.async_step_phone()
+        if self._reauth_entry.data.get("auth_mode") == "phone":
+            return await self.async_step_phone()
+        return await self.async_step_reauth_password()
+
+    async def async_step_reauth_password(self, user_input=None):
+        """Validate a new password for the existing account."""
+        entry = self._get_reauth_entry()
+        errors = {}
+        if user_input is not None:
+            password = user_input[CONF_PASSWORD]
+            try:
+                info = await validate_input(
+                    self.hass,
+                    {CONF_USERNAME: entry.data[CONF_USERNAME], CONF_PASSWORD: password},
+                    client_id=entry.data.get("client_id"),
+                )
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_PASSWORD: password, "client_id": info["client_id"]}
+                )
+        return self.async_show_form(
+            step_id="reauth_password",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+        )
 
     async def async_step_phone(self, user_input=None):
         """Request a new one-time code; each request resets old state."""
