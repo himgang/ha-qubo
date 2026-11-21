@@ -1,6 +1,6 @@
 """Constants for the Qubo integration."""
 
-DOMAIN = "qubo"
+DOMAIN = "qubo_community"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 BASE_URL = "https://srvcapp.platform.quboworld.com/"

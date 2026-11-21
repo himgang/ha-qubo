@@ -22,7 +22,7 @@ from unittest.mock import patch
 import paho.mqtt.client as mqtt
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "custom_components" / "qubo"
+SOURCE = Path(__file__).resolve().parents[1] / "custom_components" / "qubo_community"
 
 
 def load_hub():

@@ -9,6 +9,7 @@ import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import validate_identifier, validate_login_response
@@ -39,8 +40,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if phone_auth:
         # Phone sessions are already authenticated by the config flow. The
         # saved expiry includes its safety margin; never extend it here.
-        from homeassistant.exceptions import ConfigEntryAuthFailed
-
         access_token = entry.data.get("access_token")
         refresh_token = entry.data.get("refresh_token")
         user_uuid = entry.data.get("user_uuid")
@@ -64,7 +63,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except SessionRejected:
                 raise ConfigEntryAuthFailed("Qubo phone session rejected") from None
             except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
-                from homeassistant.exceptions import ConfigEntryNotReady
                 raise ConfigEntryNotReady("Qubo session refresh temporarily unavailable") from None
     else:
         # --- YOUR LOGIN API CALL GOES HERE ---
@@ -98,13 +96,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 login_url, json=payload, headers=headers, params=params,
                 allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
-                # Check for errors BEFORE calling raise_for_status()
+                if response.status in (401, 403):
+                    raise ConfigEntryAuthFailed("Qubo rejected the account credentials")
                 if response.status != 200:
-                    _LOGGER.error(
-                        "Qubo login returned HTTP status %s",
-                        response.status,
-                    )
-                    return False  # Stop setting up the integration
+                    raise ConfigEntryNotReady(f"Qubo login returned HTTP {response.status}")
 
                 response.raise_for_status()
                 data = await response.json()
@@ -141,8 +136,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if phone_auth and sync_response.status in (401, 403):
                 raise ConfigEntryAuthFailed("Qubo phone session rejected")
             if sync_response.status != 200:
-                _LOGGER.error("Qubo sync returned HTTP status %s", sync_response.status)
-                return False
+                raise ConfigEntryNotReady(f"Qubo device sync returned HTTP {sync_response.status}")
             sync_response.raise_for_status()
             sync_data = await sync_response.json()
             if not isinstance(sync_data, dict):
@@ -187,12 +181,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
 
             if not plugs:
-                _LOGGER.error("No supported smart plugs found in the Qubo account")
-                return False
+                raise ConfigEntryNotReady("No supported smart plugs found in the Qubo account")
 
     except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError):
-        _LOGGER.error("Qubo setup failed: invalid response or connection failure")
-        return False
+        raise ConfigEntryNotReady("Qubo setup failed: invalid response or connection failure") from None
 
     if phone_auth and time.time() >= expires_at:
         raise ConfigEntryAuthFailed("Qubo phone session expired")
@@ -208,6 +200,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             hubs.append(hub)
             await hub.start()
+    except OSError:
+        await asyncio.gather(*(hub.stop() for hub in hubs), return_exceptions=True)
+        raise ConfigEntryNotReady("Could not connect to the Qubo MQTT broker") from None
     except BaseException:
         await asyncio.gather(*(hub.stop() for hub in hubs), return_exceptions=True)
         raise

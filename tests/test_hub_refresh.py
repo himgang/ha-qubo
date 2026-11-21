@@ -19,7 +19,7 @@ import aiohttp
 
 def load_hub():
     """Load only hub/const, without executing the integration's __init__."""
-    root = Path(__file__).resolve().parents[1] / "custom_components" / "qubo"
+    root = Path(__file__).resolve().parents[1] / "custom_components" / "qubo_community"
     package = types.ModuleType("_qubo_refresh_tests")
     package.__path__ = [str(root)]
     core = types.ModuleType("homeassistant.core")
